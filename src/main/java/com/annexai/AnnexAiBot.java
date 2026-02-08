@@ -828,12 +828,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private long costForUserResolution(Database.User user, String res) {
         boolean isPro = MODEL_NANO_BANANA_PRO.equals(normalizeModel(user.currentModel));
         if ("4k".equalsIgnoreCase(res)) {
-            return isPro ? 14_000 : 10_000;
+            return isPro ? 40_000 : 10_000;
         }
         if ("1k".equalsIgnoreCase(res) || "2k".equalsIgnoreCase(res)) {
-            return isPro ? 10_000 : 9_000;
+            return isPro ? 36_000 : 9_000;
         }
-        return isPro ? 10_000 : 9_000;
+        return isPro ? 36_000 : 9_000;
     }
 
     private String mapResolution(String res) {
