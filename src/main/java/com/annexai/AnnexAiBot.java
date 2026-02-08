@@ -637,7 +637,15 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         edit.setMessageId(messageId);
         edit.setText(text);
         edit.setReplyMarkup(markup);
-        execute(edit);
+        try {
+            execute(edit);
+        } catch (TelegramApiException e) {
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("message is not modified")) {
+                return;
+            }
+            throw e;
+        }
     }
 
     private String modelInfoText(Database.User user) {

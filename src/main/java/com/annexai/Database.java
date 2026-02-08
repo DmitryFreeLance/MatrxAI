@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public class Database {
     private final String dbPath;
@@ -23,7 +24,6 @@ public class Database {
             parent.mkdirs();
         }
         try (Connection conn = connect(); Statement st = conn.createStatement()) {
-            st.execute("PRAGMA foreign_keys=ON");
 
             st.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -132,7 +132,14 @@ public class Database {
     }
 
     private Connection connect() throws SQLException {
-        return DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+        Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+        try (Statement st = conn.createStatement()) {
+            st.execute("PRAGMA foreign_keys=ON");
+            st.execute("PRAGMA journal_mode=WAL");
+            st.execute("PRAGMA synchronous=NORMAL");
+            st.execute("PRAGMA busy_timeout=5000");
+        }
+        return conn;
     }
 
     private static String now() {
@@ -262,40 +269,74 @@ public class Database {
     }
 
     public synchronized void addBalance(long tgId, long delta) {
-        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "UPDATE users SET balance = balance + ?, updated_at = ? WHERE tg_id = ?")) {
-            ps.setLong(1, delta);
-            ps.setString(2, now());
-            ps.setLong(3, tgId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new IllegalStateException("Failed to update balance", e);
-        }
+        runWithRetry(() -> {
+            try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE users SET balance = balance + ?, updated_at = ? WHERE tg_id = ?")) {
+                ps.setLong(1, delta);
+                ps.setString(2, now());
+                ps.setLong(3, tgId);
+                ps.executeUpdate();
+            }
+        }, "Failed to update balance");
     }
 
     public synchronized void addSpent(long tgId, long tokens) {
-        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "UPDATE users SET spent = spent + ?, updated_at = ? WHERE tg_id = ?")) {
-            ps.setLong(1, tokens);
-            ps.setString(2, now());
-            ps.setLong(3, tgId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new IllegalStateException("Failed to update spent", e);
-        }
+        runWithRetry(() -> {
+            try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE users SET spent = spent + ?, updated_at = ? WHERE tg_id = ?")) {
+                ps.setLong(1, tokens);
+                ps.setString(2, now());
+                ps.setLong(3, tgId);
+                ps.executeUpdate();
+            }
+        }, "Failed to update spent");
     }
 
     public synchronized void addReferralEarned(long tgId, long tokens) {
-        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "UPDATE users SET referral_earned = referral_earned + ?, balance = balance + ?, updated_at = ? WHERE tg_id = ?")) {
-            ps.setLong(1, tokens);
-            ps.setLong(2, tokens);
-            ps.setString(3, now());
-            ps.setLong(4, tgId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new IllegalStateException("Failed to update referral", e);
+        runWithRetry(() -> {
+            try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE users SET referral_earned = referral_earned + ?, balance = balance + ?, updated_at = ? WHERE tg_id = ?")) {
+                ps.setLong(1, tokens);
+                ps.setLong(2, tokens);
+                ps.setString(3, now());
+                ps.setLong(4, tgId);
+                ps.executeUpdate();
+            }
+        }, "Failed to update referral");
+    }
+
+    private void runWithRetry(SqlRunnable runnable, String errorMessage) {
+        int attempts = 5;
+        for (int i = 0; i < attempts; i++) {
+            try {
+                runnable.run();
+                return;
+            } catch (SQLException e) {
+                if (isBusy(e) && i < attempts - 1) {
+                    sleep(200);
+                    continue;
+                }
+                throw new IllegalStateException(errorMessage, e);
+            }
         }
+    }
+
+    private boolean isBusy(SQLException e) {
+        String msg = e.getMessage();
+        return msg != null && msg.toLowerCase(Locale.ROOT).contains("database is locked");
+    }
+
+    private void sleep(long millis) {
+        try {
+            TimeUnit.MILLISECONDS.sleep(millis);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @FunctionalInterface
+    private interface SqlRunnable {
+        void run() throws SQLException;
     }
 
     public synchronized void recordModelUsage(long tgId, String model, long tokens) {
