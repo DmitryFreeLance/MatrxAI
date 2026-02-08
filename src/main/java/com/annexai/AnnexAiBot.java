@@ -39,7 +39,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String STATE_WAIT_PROMO = "WAIT_PROMO";
     private static final String STATE_ADMIN_GRANT = "ADMIN_GRANT";
 
-    private static final String MODEL_NANO_BANANA = "nano-banana";
+    private static final String MODEL_NANO_BANANA = "google/nano-banana";
+    private static final String MODEL_NANO_BANANA_EDIT = "google/nano-banana-edit";
     private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
 
     private final Config config;
@@ -413,7 +414,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 String resolution = mapResolution(user.resolution);
                 String outputFormat = mapFormat(user.outputFormat);
                 String aspectRatio = mapAspectRatio(user.aspectRatio);
-                String model = user.currentModel == null ? MODEL_NANO_BANANA : user.currentModel;
+                String model = normalizeModel(user.currentModel);
+                if (MODEL_NANO_BANANA.equals(model) && !imageUrls.isEmpty()) {
+                    model = MODEL_NANO_BANANA_EDIT;
+                }
                 String taskId = kieClient.createNanoBananaTask(model, prompt, imageUrls, aspectRatio, outputFormat, resolution);
 
                 pollTaskAndSend(taskId, user.tgId);
@@ -440,7 +444,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     }
                     return;
                 }
-                if ("failed".equalsIgnoreCase(info.state)) {
+                if ("failed".equalsIgnoreCase(info.state) || "fail".equalsIgnoreCase(info.state)) {
                     safeSend(chatId, "Генерация не удалась: " + info.failReason);
                     return;
                 }
@@ -822,7 +826,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private long costForUserResolution(Database.User user, String res) {
-        boolean isPro = MODEL_NANO_BANANA_PRO.equals(user.currentModel);
+        boolean isPro = MODEL_NANO_BANANA_PRO.equals(normalizeModel(user.currentModel));
         if ("4k".equalsIgnoreCase(res)) {
             return isPro ? 14_000 : 10_000;
         }
@@ -850,7 +854,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (ratio == null || ratio.isBlank()) {
             return "auto";
         }
-        return ratio.toLowerCase(Locale.ROOT);
+        String normalized = ratio.toLowerCase(Locale.ROOT);
+        if ("auto".equals(normalized)) {
+            return "1:1";
+        }
+        return normalized;
     }
 
     private String formatLabel(String format) {
@@ -875,11 +883,24 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String modelLabel(String model) {
-        if (MODEL_NANO_BANANA.equals(model)) {
+        if (MODEL_NANO_BANANA.equals(model) || MODEL_NANO_BANANA_EDIT.equals(model) || "nano-banana".equalsIgnoreCase(model)) {
             return "Nano Banana";
         }
         if (MODEL_NANO_BANANA_PRO.equals(model)) {
             return "Nano Banana Pro";
+        }
+        return model;
+    }
+
+    private String normalizeModel(String model) {
+        if (model == null || model.isBlank()) {
+            return MODEL_NANO_BANANA;
+        }
+        if ("nano-banana".equalsIgnoreCase(model)) {
+            return MODEL_NANO_BANANA;
+        }
+        if ("nano-banana-pro".equalsIgnoreCase(model)) {
+            return MODEL_NANO_BANANA_PRO;
         }
         return model;
     }

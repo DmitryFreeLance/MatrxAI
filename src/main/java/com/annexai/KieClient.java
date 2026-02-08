@@ -44,25 +44,55 @@ public class KieClient {
     }
 
     public String createNanoBananaTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String outputFormat, String resolution) throws IOException {
-        StringBuilder images = new StringBuilder("[");
-        for (int i = 0; i < imageUrls.size(); i++) {
-            if (i > 0) {
-                images.append(",");
+        String payload;
+        if ("nano-banana-pro".equalsIgnoreCase(model)) {
+            StringBuilder images = new StringBuilder("[");
+            for (int i = 0; i < imageUrls.size(); i++) {
+                if (i > 0) {
+                    images.append(",");
+                }
+                images.append("\"").append(escape(imageUrls.get(i))).append("\"");
             }
-            images.append("\"").append(escape(imageUrls.get(i))).append("\"");
-        }
-        images.append("]");
+            images.append("]");
 
-        String payload = "{" +
-                "\"model\":\"" + escape(model) + "\"," +
-                "\"input\":{"
-                + "\"prompt\":\"" + escape(prompt) + "\"," +
-                "\"image_input\":" + images + "," +
-                "\"aspect_ratio\":\"" + escape(aspectRatio) + "\"," +
-                "\"resolution\":\"" + escape(resolution) + "\"," +
-                "\"output_format\":\"" + escape(outputFormat) + "\"" +
-                "}" +
-                "}";
+            payload = "{" +
+                    "\"model\":\"" + escape(model) + "\"," +
+                    "\"input\":{"
+                    + "\"prompt\":\"" + escape(prompt) + "\"," +
+                    "\"image_input\":" + images + "," +
+                    "\"aspect_ratio\":\"" + escape(aspectRatio) + "\"," +
+                    "\"resolution\":\"" + escape(resolution) + "\"," +
+                    "\"output_format\":\"" + escape(outputFormat) + "\"" +
+                    "}" +
+                    "}";
+        } else if ("google/nano-banana-edit".equalsIgnoreCase(model)) {
+            StringBuilder images = new StringBuilder("[");
+            for (int i = 0; i < imageUrls.size(); i++) {
+                if (i > 0) {
+                    images.append(",");
+                }
+                images.append("\"").append(escape(imageUrls.get(i))).append("\"");
+            }
+            images.append("]");
+            payload = "{" +
+                    "\"model\":\"" + escape(model) + "\"," +
+                    "\"input\":{"
+                    + "\"prompt\":\"" + escape(prompt) + "\"," +
+                    "\"image_urls\":" + images + "," +
+                    "\"output_format\":\"" + escape(outputFormat) + "\"," +
+                    "\"image_size\":\"" + escape(aspectRatio) + "\"" +
+                    "}" +
+                    "}";
+        } else {
+            payload = "{" +
+                    "\"model\":\"" + escape(model) + "\"," +
+                    "\"input\":{"
+                    + "\"prompt\":\"" + escape(prompt) + "\"," +
+                    "\"output_format\":\"" + escape(outputFormat) + "\"," +
+                    "\"image_size\":\"" + escape(aspectRatio) + "\"" +
+                    "}" +
+                    "}";
+        }
 
         RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
         Request request = new Request.Builder()
@@ -106,7 +136,11 @@ public class KieClient {
             info.taskId = data.path("taskId").asText();
             info.state = data.path("state").asText();
             info.resultJson = data.path("resultJson").asText();
-            info.failReason = data.path("failReason").asText();
+            String failReason = data.path("failReason").asText();
+            if (failReason == null || failReason.isBlank()) {
+                failReason = data.path("failMsg").asText();
+            }
+            info.failReason = failReason;
             return info;
         }
     }
