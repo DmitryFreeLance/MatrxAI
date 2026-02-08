@@ -6,6 +6,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class Database {
@@ -39,7 +40,8 @@ public class Database {
                     receipt_email TEXT,
                     current_model TEXT,
                     output_format TEXT,
-                    resolution TEXT
+                    resolution TEXT,
+                    aspect_ratio TEXT
                 )
             """);
 
@@ -80,6 +82,10 @@ public class Database {
             }
             try {
                 st.execute("ALTER TABLE payments ADD COLUMN payload TEXT");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN aspect_ratio TEXT");
             } catch (SQLException ignored) {
             }
 
@@ -157,8 +163,8 @@ public class Database {
 
         String created = now();
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution) " +
-                        "VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, 0, NULL, 'auto', '2k')")) {
+                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio) " +
+                        "VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto')")) {
             ps.setLong(1, tgId);
             ps.setString(2, username);
             ps.setString(3, firstName);
@@ -179,7 +185,7 @@ public class Database {
 
     public synchronized User getUser(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution FROM users WHERE tg_id = ?")) {
+                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio FROM users WHERE tg_id = ?")) {
             ps.setLong(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -199,6 +205,7 @@ public class Database {
                     u.currentModel = rs.getString("current_model");
                     u.outputFormat = rs.getString("output_format");
                     u.resolution = rs.getString("resolution");
+                    u.aspectRatio = rs.getString("aspect_ratio");
                     return u;
                 }
             }
@@ -236,6 +243,10 @@ public class Database {
 
     public synchronized void setResolution(long tgId, String resolution) {
         updateUserField(tgId, "resolution", resolution);
+    }
+
+    public synchronized void setAspectRatio(long tgId, String ratio) {
+        updateUserField(tgId, "aspect_ratio", ratio);
     }
 
     private void updateUserField(long tgId, String field, String value) {
@@ -395,9 +406,10 @@ public class Database {
     }
 
     public synchronized void createPromoCode(String code, long tokens) {
+        String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO promo_codes (code, tokens, is_used, used_by, created_at, used_at) VALUES (?, ?, 0, NULL, ?, NULL)")) {
-            ps.setString(1, code);
+            ps.setString(1, normalized);
             ps.setLong(2, tokens);
             ps.setString(3, now());
             ps.executeUpdate();
@@ -407,9 +419,13 @@ public class Database {
     }
 
     public synchronized PromoRedeemResult redeemPromo(long tgId, String code) {
+        if (code == null) {
+            return PromoRedeemResult.NOT_FOUND;
+        }
+        String normalized = code.trim().toUpperCase(Locale.ROOT);
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
                 "SELECT code, tokens, is_used FROM promo_codes WHERE code = ?")) {
-            ps.setString(1, code);
+            ps.setString(1, normalized);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     return PromoRedeemResult.NOT_FOUND;
@@ -423,7 +439,7 @@ public class Database {
                         "UPDATE promo_codes SET is_used = 1, used_by = ?, used_at = ? WHERE code = ?")) {
                     upd.setLong(1, tgId);
                     upd.setString(2, now());
-                    upd.setString(3, code);
+                    upd.setString(3, normalized);
                     upd.executeUpdate();
                 }
                 addBalance(tgId, tokens);
@@ -622,6 +638,7 @@ public class Database {
         public String currentModel;
         public String outputFormat;
         public String resolution;
+        public String aspectRatio;
     }
 
     public static class PendingAction {

@@ -200,6 +200,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, settingsText(user), settingsKeyboard(user));
             return;
         }
+        if (data.startsWith("settings:ratio:")) {
+            String ratio = data.substring("settings:ratio:".length());
+            db.setAspectRatio(userId, ratio);
+            user.aspectRatio = ratio;
+            editMessage(chatId, messageId, settingsText(user), settingsKeyboard(user));
+            return;
+        }
         if ("settings:back".equals(data)) {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
@@ -398,7 +405,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
                 String resolution = mapResolution(user.resolution);
                 String outputFormat = mapFormat(user.outputFormat);
-                String taskId = kieClient.createNanoBananaTask(prompt, imageUrls, "1:1", outputFormat, resolution);
+                String aspectRatio = mapAspectRatio(user.aspectRatio);
+                String taskId = kieClient.createNanoBananaTask(prompt, imageUrls, aspectRatio, outputFormat, resolution);
 
                 pollTaskAndSend(taskId, user.tgId);
             } catch (Exception e) {
@@ -536,9 +544,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup startKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("Выбор модели", "menu:models")),
-                List.of(button("Купить токены", "menu:buy")),
-                List.of(button("Мой профиль", "menu:profile"))
+                List.of(button("🧠 Выбор модели", "menu:models")),
+                List.of(button("💳 Купить токены", "menu:buy")),
+                List.of(button("👤 Мой профиль", "menu:profile"))
         ));
     }
 
@@ -552,39 +560,47 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private InlineKeyboardMarkup modelInfoKeyboard() {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("⚙️ Настройки", "settings")),
-                List.of(button("Вернуться в меню", "menu:start"))
+                List.of(button("🏠 Вернуться в меню", "menu:start"))
         ));
     }
 
     private InlineKeyboardMarkup settingsKeyboard(Database.User user) {
         String format = user.outputFormat == null ? "auto" : user.outputFormat;
         String resolution = user.resolution == null ? "2k" : user.resolution;
+        String ratio = user.aspectRatio == null ? "auto" : user.aspectRatio;
         return new InlineKeyboardMarkup(List.of(
-                List.of(button(formatButtonLabel("Авто", "auto", format), "settings:format:auto"),
-                        button(formatButtonLabel("PNG", "png", format), "settings:format:png"),
-                        button(formatButtonLabel("JPG", "jpg", format), "settings:format:jpg")),
-                List.of(button(resButtonLabel("1K", "1k", resolution), "settings:res:1k"),
-                        button(resButtonLabel("2K", "2k", resolution), "settings:res:2k"),
-                        button(resButtonLabel("4K", "4k", resolution), "settings:res:4k")),
+                List.of(button(formatButtonLabel("🖼️ Авто", "auto", format), "settings:format:auto"),
+                        button(formatButtonLabel("🖼️ PNG", "png", format), "settings:format:png"),
+                        button(formatButtonLabel("🖼️ JPG", "jpg", format), "settings:format:jpg")),
+                List.of(button(resButtonLabel("📏 1K", "1k", resolution), "settings:res:1k"),
+                        button(resButtonLabel("📏 2K", "2k", resolution), "settings:res:2k"),
+                        button(resButtonLabel("📏 4K", "4k", resolution), "settings:res:4k")),
+                List.of(button(ratioButtonLabel("📐 1:1", "1:1", ratio), "settings:ratio:1:1"),
+                        button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3"),
+                        button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2")),
+                List.of(button(ratioButtonLabel("📐 3:4", "3:4", ratio), "settings:ratio:3:4"),
+                        button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
+                        button(ratioButtonLabel("📐 9:16", "9:16", ratio), "settings:ratio:9:16")),
+                List.of(button(ratioButtonLabel("📐 auto", "auto", ratio), "settings:ratio:auto")),
                 List.of(button("⬅️ Назад", "settings:back"))
         ));
     }
 
     private InlineKeyboardMarkup buyKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("50.000 токенов - 99р", "buy:pack:50k")),
-                List.of(button("200.000 токенов - 239р", "buy:pack:200k")),
-                List.of(button("500.000 токенов - 529р", "buy:pack:500k")),
-                List.of(button("1.000.000 токенов - 999р", "buy:pack:1m")),
-                List.of(button("Активировать промокод", "promo:activate")),
+                List.of(button("💎 50.000 токенов - 99р", "buy:pack:50k")),
+                List.of(button("💎 200.000 токенов - 239р", "buy:pack:200k")),
+                List.of(button("💎 500.000 токенов - 529р", "buy:pack:500k")),
+                List.of(button("💎 1.000.000 токенов - 999р", "buy:pack:1m")),
+                List.of(button("🎟️ Активировать промокод", "promo:activate")),
                 List.of(button("⬅️ Назад", "buy:back"))
         ));
     }
 
     private InlineKeyboardMarkup profileKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("Мои платежи", "profile:payments")),
-                List.of(button("Пригласить друга", "profile:ref")),
+                List.of(button("🧾 Мои платежи", "profile:payments")),
+                List.of(button("🔗 Пригласить друга", "profile:ref")),
                 List.of(button("⬅️ Назад", "profile:back"))
         ));
     }
@@ -627,7 +643,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private String modelInfoText(Database.User user) {
         long cost = costForUser(user);
         long queries = cost == 0 ? 0 : user.balance / cost;
-        return "🍌 Nano Banana · твори и экспериментируй\n\n" +
+        return "🍌 Nano Banana Pro · твори и экспериментируй\n\n" +
                 "📖 Создавайте:\n" +
                 "– Создает фотографии по промпту и по вашим изображениям;\n" +
                 "– Она отлично наследует исходное фото и может работать с ним. Попросите её, например, отредактировать ваши фото (добавлять, удалять, менять объекты и всё, что угодно).\n\n" +
@@ -635,14 +651,22 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "✏️ Если промпт не помещается в одном сообщении вместе с фото, прикрепите сначала фото, а следующим сообщением – промпт.\n\n" +
                 "⚙️ Настройки\n" +
                 "Формат фото: " + formatLabel(user.outputFormat) + "\n" +
-                "PRO-режим: отключен\n\n" +
                 "🔹 Баланса хватит на " + queries + " запросов. 1 генерация = " + formatNumber(cost) + " токенов";
     }
 
     private String settingsText(Database.User user) {
         return "⚙️ Настройки\n" +
-                "Формат фото: " + formatLabel(user.outputFormat) + "\n" +
-                "Разрешение: " + resolutionLabel(user.resolution) + "\n\n" +
+                "Формат файла: " + formatLabel(user.outputFormat) + "\n" +
+                "Разрешение: " + resolutionLabel(user.resolution) + "\n" +
+                "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
+                "📐 Выберите формат создаваемого фото в Nano Banana\n" +
+                "1:1: идеально подходит для профильных фото в соцсетях, таких как VK, Telegram и т.д\n\n" +
+                "2:3: хорошо подходит для печатных фотографий, но также может использоваться для пинов на Pinterest\n\n" +
+                "3:2: широко используемый формат для фотографий, подходит для постов в Telegram, VK, и др.\n\n" +
+                "3:4: широко используемый формат для фотографий, карточек товаров и т.д.\n\n" +
+                "16:9: стандартный формат для видео, идеален для YouTube, VK и др.\n\n" +
+                "9:16: оптимальный формат для Stories в Telegram или вертикальных видео на YouTube\n\n" +
+                "auto: автоматически подберет нужный формат\n\n" +
                 "Стоимость генерации:\n" +
                 "1K = 10 000 токенов\n" +
                 "2K = 10 000 токенов\n" +
@@ -794,6 +818,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return format.toLowerCase(Locale.ROOT);
     }
 
+    private String mapAspectRatio(String ratio) {
+        if (ratio == null || ratio.isBlank()) {
+            return "auto";
+        }
+        return ratio.toLowerCase(Locale.ROOT);
+    }
+
     private String formatLabel(String format) {
         if (format == null || format.isBlank() || "auto".equalsIgnoreCase(format)) {
             return "автоматический";
@@ -806,6 +837,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return "2K";
         }
         return res.toUpperCase(Locale.ROOT);
+    }
+
+    private String aspectRatioLabel(String ratio) {
+        if (ratio == null || ratio.isBlank()) {
+            return "auto";
+        }
+        return ratio.toLowerCase(Locale.ROOT);
     }
 
     private String modelLabel(String model) {
@@ -823,6 +861,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String resButtonLabel(String label, String value, String current) {
+        if (value.equalsIgnoreCase(current)) {
+            return "✅ " + label;
+        }
+        return label;
+    }
+
+    private String ratioButtonLabel(String label, String value, String current) {
         if (value.equalsIgnoreCase(current)) {
             return "✅ " + label;
         }
