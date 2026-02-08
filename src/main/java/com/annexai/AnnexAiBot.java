@@ -20,8 +20,13 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 import java.security.SecureRandom;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -41,6 +46,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private final KieClient kieClient;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ObjectMapper mapper = new ObjectMapper();
+    private final OkHttpClient httpClient = new OkHttpClient();
 
     private final Map<String, PurchaseOption> purchaseOptions = Map.of(
             "50k", new PurchaseOption(50_000, 99),
@@ -414,10 +420,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         return;
                     }
                     for (String url : urls) {
-                        SendPhoto photo = new SendPhoto();
-                        photo.setChatId(String.valueOf(chatId));
-                        photo.setPhoto(new InputFile(url));
-                        execute(photo);
+                        sendPhotoFromUrl(chatId, url);
                     }
                     return;
                 }
@@ -718,6 +721,39 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         try {
             execute(new SendMessage(String.valueOf(chatId), text));
         } catch (Exception ignored) {
+        }
+    }
+
+    private void sendPhotoFromUrl(long chatId, String url) {
+        Path tempFile = null;
+        try {
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "annexai-bot/1.0")
+                    .build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) {
+                    safeSend(chatId, "Не удалось загрузить изображение по ссылке.");
+                    return;
+                }
+                tempFile = Files.createTempFile("kie_", ".png");
+                try (var in = response.body().byteStream()) {
+                    Files.copy(in, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+            SendPhoto photo = new SendPhoto();
+            photo.setChatId(String.valueOf(chatId));
+            photo.setPhoto(new InputFile(tempFile.toFile()));
+            execute(photo);
+        } catch (Exception e) {
+            safeSend(chatId, "Ошибка отправки изображения: " + e.getMessage());
+        } finally {
+            if (tempFile != null) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 
