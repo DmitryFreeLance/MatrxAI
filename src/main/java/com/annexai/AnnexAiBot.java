@@ -39,7 +39,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String STATE_WAIT_PROMO = "WAIT_PROMO";
     private static final String STATE_ADMIN_GRANT = "ADMIN_GRANT";
 
-    private static final String MODEL_NANO_BANANA = "nano-banana-pro";
+    private static final String MODEL_NANO_BANANA = "nano-banana";
+    private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
 
     private final Config config;
     private final Database db;
@@ -175,6 +176,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("model:nano".equals(data)) {
             db.setCurrentModel(userId, MODEL_NANO_BANANA);
             user.currentModel = MODEL_NANO_BANANA;
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
+            return;
+        }
+        if ("model:nano-pro".equals(data)) {
+            db.setCurrentModel(userId, MODEL_NANO_BANANA_PRO);
+            user.currentModel = MODEL_NANO_BANANA_PRO;
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
@@ -372,7 +379,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private void handlePrompt(Database.User user, String prompt) throws TelegramApiException {
-        if (!MODEL_NANO_BANANA.equals(user.currentModel)) {
+        if (!MODEL_NANO_BANANA.equals(user.currentModel) && !MODEL_NANO_BANANA_PRO.equals(user.currentModel)) {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
@@ -406,7 +413,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 String resolution = mapResolution(user.resolution);
                 String outputFormat = mapFormat(user.outputFormat);
                 String aspectRatio = mapAspectRatio(user.aspectRatio);
-                String taskId = kieClient.createNanoBananaTask(prompt, imageUrls, aspectRatio, outputFormat, resolution);
+                String model = user.currentModel == null ? MODEL_NANO_BANANA : user.currentModel;
+                String taskId = kieClient.createNanoBananaTask(model, prompt, imageUrls, aspectRatio, outputFormat, resolution);
 
                 pollTaskAndSend(taskId, user.tgId);
             } catch (Exception e) {
@@ -552,7 +560,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup modelSelectKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("🍌 Nano Banana Pro", "model:nano")),
+                List.of(button("🍌 Nano Banana", "model:nano")),
+                List.of(button("🍌 Nano Banana Pro", "model:nano-pro")),
                 List.of(button("⬅️ Назад", "menu:start"))
         ));
     }
@@ -651,7 +660,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private String modelInfoText(Database.User user) {
         long cost = costForUser(user);
         long queries = cost == 0 ? 0 : user.balance / cost;
-        return "🍌 Nano Banana Pro · твори и экспериментируй\n\n" +
+        String title = MODEL_NANO_BANANA_PRO.equals(user.currentModel) ? "🍌 Nano Banana Pro · твори и экспериментируй"
+                : "🍌 Nano Banana · твори и экспериментируй";
+        return title + "\n\n" +
                 "📖 Создавайте:\n" +
                 "– Создает фотографии по промпту и по вашим изображениям;\n" +
                 "– Она отлично наследует исходное фото и может работать с ним. Попросите её, например, отредактировать ваши фото (добавлять, удалять, менять объекты и всё, что угодно).\n\n" +
@@ -663,6 +674,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String settingsText(Database.User user) {
+        long costDefault = costForUserResolution(user, "2k");
+        long cost4k = costForUserResolution(user, "4k");
         return "⚙️ Настройки\n" +
                 "Формат файла: " + formatLabel(user.outputFormat) + "\n" +
                 "Разрешение: " + resolutionLabel(user.resolution) + "\n" +
@@ -676,9 +689,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "9:16: оптимальный формат для Stories в Telegram или вертикальных видео на YouTube\n\n" +
                 "auto: автоматически подберет нужный формат\n\n" +
                 "Стоимость генерации:\n" +
-                "1K = 10 000 токенов\n" +
-                "2K = 10 000 токенов\n" +
-                "4K = 14 000 токенов";
+                "1K = " + formatNumber(costDefault) + " токенов\n" +
+                "2K = " + formatNumber(costDefault) + " токенов\n" +
+                "4K = " + formatNumber(cost4k) + " токенов";
     }
 
     private String buyText() {
@@ -805,11 +818,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private long costForUser(Database.User user) {
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
-        return switch (res) {
-            case "4k" -> 14_000;
-            case "1k", "2k" -> 10_000;
-            default -> 9_000;
-        };
+        return costForUserResolution(user, res);
+    }
+
+    private long costForUserResolution(Database.User user, String res) {
+        boolean isPro = MODEL_NANO_BANANA_PRO.equals(user.currentModel);
+        if ("4k".equalsIgnoreCase(res)) {
+            return isPro ? 14_000 : 10_000;
+        }
+        if ("1k".equalsIgnoreCase(res) || "2k".equalsIgnoreCase(res)) {
+            return isPro ? 10_000 : 9_000;
+        }
+        return isPro ? 10_000 : 9_000;
     }
 
     private String mapResolution(String res) {
@@ -856,6 +876,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String modelLabel(String model) {
         if (MODEL_NANO_BANANA.equals(model)) {
+            return "Nano Banana";
+        }
+        if (MODEL_NANO_BANANA_PRO.equals(model)) {
             return "Nano Banana Pro";
         }
         return model;

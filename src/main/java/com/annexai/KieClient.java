@@ -43,7 +43,7 @@ public class KieClient {
         }
     }
 
-    public String createNanoBananaTask(String prompt, List<String> imageUrls, String aspectRatio, String outputFormat, String resolution) throws IOException {
+    public String createNanoBananaTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String outputFormat, String resolution) throws IOException {
         StringBuilder images = new StringBuilder("[");
         for (int i = 0; i < imageUrls.size(); i++) {
             if (i > 0) {
@@ -54,7 +54,7 @@ public class KieClient {
         images.append("]");
 
         String payload = "{" +
-                "\"model\":\"nano-banana-pro\"," +
+                "\"model\":\"" + escape(model) + "\"," +
                 "\"input\":{"
                 + "\"prompt\":\"" + escape(prompt) + "\"," +
                 "\"image_input\":" + images + "," +
