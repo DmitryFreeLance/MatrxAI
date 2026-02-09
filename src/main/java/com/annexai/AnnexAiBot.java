@@ -7,11 +7,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery;
 import org.telegram.telegrambots.meta.api.methods.GetFile;
+import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember;
 import org.telegram.telegrambots.meta.api.methods.send.SendInvoice;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.*;
+import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember;
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice;
 import org.telegram.telegrambots.meta.api.objects.payments.OrderInfo;
 import org.telegram.telegrambots.meta.api.objects.payments.PreCheckoutQuery;
@@ -42,6 +44,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_NANO_BANANA = "google/nano-banana";
     private static final String MODEL_NANO_BANANA_EDIT = "google/nano-banana-edit";
     private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
+    private static final long CHANNEL_ID = -1003828302009L;
 
     private final Config config;
     private final Database db;
@@ -109,11 +112,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
         Database.User user = db.getOrCreateUser(userId, username, firstName, lastName, referrerId);
         if (referrerId != null && user.referrerId == null) {
-            db.setReferrerIfEmpty(userId, referrerId);
+            boolean linked = db.setReferrerIfEmpty(userId, referrerId);
+            if (linked) {
+                db.addBalance(userId, 50_000);
+                safeSend(userId, "🎉 Вам начислено 50 000 токенов за переход по реферальной ссылке.");
+            }
             user = db.getUser(userId);
         }
 
         if (message.hasPhoto()) {
+            if (!ensureSubscribed(message.getChatId(), userId)) {
+                return;
+            }
             saveIncomingPhotos(userId, message.getPhoto());
             if (message.getCaption() != null && !message.getCaption().isBlank()) {
                 handlePrompt(user, message.getCaption());
@@ -128,11 +138,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (message.hasText()) {
             String text = message.getText().trim();
             if (text.startsWith("/start")) {
-                sendStart(message.getChatId(), user);
+                if (ensureSubscribed(message.getChatId(), userId)) {
+                    sendStart(message.getChatId(), user);
+                }
                 return;
             }
             if (text.startsWith("/admin")) {
-                sendAdminPanel(message.getChatId(), userId);
+                if (ensureSubscribed(message.getChatId(), userId)) {
+                    sendAdminPanel(message.getChatId(), userId);
+                }
+                return;
+            }
+
+            if (!ensureSubscribed(message.getChatId(), userId)) {
                 return;
             }
 
@@ -166,6 +184,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             user = db.getOrCreateUser(userId, query.getFrom().getUserName(), query.getFrom().getFirstName(), query.getFrom().getLastName(), null);
         }
 
+        if ("sub:check".equals(data)) {
+            if (ensureSubscribed(chatId, userId)) {
+                sendStart(chatId, user);
+            }
+            return;
+        }
+
+        if (!ensureSubscribed(chatId, userId)) {
+            return;
+        }
+
         if ("menu:start".equals(data)) {
             sendStart(chatId, user);
             return;
@@ -191,31 +220,43 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("settings".equals(data)) {
-            editMessage(chatId, messageId, settingsText(user), settingsKeyboard(user));
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard());
+            return;
+        }
+        if ("settings:format_menu".equals(data)) {
+            editMessage(chatId, messageId, formatMenuText(user), formatKeyboard(user));
+            return;
+        }
+        if ("settings:resolution_menu".equals(data)) {
+            editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
             return;
         }
         if (data.startsWith("settings:format:")) {
             String format = data.substring("settings:format:".length());
             db.setOutputFormat(userId, format);
             user.outputFormat = format;
-            editMessage(chatId, messageId, settingsText(user), settingsKeyboard(user));
+            editMessage(chatId, messageId, formatMenuText(user), formatKeyboard(user));
             return;
         }
         if (data.startsWith("settings:res:")) {
             String res = data.substring("settings:res:".length());
             db.setResolution(userId, res);
             user.resolution = res;
-            editMessage(chatId, messageId, settingsText(user), settingsKeyboard(user));
+            editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
             return;
         }
         if (data.startsWith("settings:ratio:")) {
             String ratio = data.substring("settings:ratio:".length());
             db.setAspectRatio(userId, ratio);
             user.aspectRatio = ratio;
-            editMessage(chatId, messageId, settingsText(user), settingsKeyboard(user));
+            editMessage(chatId, messageId, formatMenuText(user), formatKeyboard(user));
             return;
         }
         if ("settings:back".equals(data)) {
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard());
+            return;
+        }
+        if ("settings:back_to_model".equals(data)) {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
@@ -338,7 +379,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         db.addBalance(userId, option.tokens);
 
         if (user.referrerId != null) {
-            long bonus = Math.round(option.tokens * 0.05);
+            long bonus = Math.round(option.tokens * 0.02);
             if (bonus > 0) {
                 db.addReferralEarned(user.referrerId, bonus);
                 safeSend(user.referrerId, "Вам начислен реферальный бонус: " + formatNumber(bonus) + " токенов.");
@@ -428,12 +469,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private void pollTaskAndSend(String taskId, long chatId) {
-        int attempts = 60;
+        int attempts = 120;
         for (int i = 0; i < attempts; i++) {
             try {
                 TimeUnit.SECONDS.sleep(3);
                 KieClient.TaskInfo info = kieClient.getTaskInfo(taskId);
-                if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state)) {
+                if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state) || "completed".equalsIgnoreCase(info.state)) {
                     List<String> urls = extractResultUrls(info.resultJson);
                     if (urls.isEmpty()) {
                         safeSend(chatId, "Готово, но без изображений. Попробуйте другой запрос.");
@@ -444,7 +485,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     }
                     return;
                 }
-                if ("failed".equalsIgnoreCase(info.state) || "fail".equalsIgnoreCase(info.state)) {
+                if ("failed".equalsIgnoreCase(info.state)
+                        || "fail".equalsIgnoreCase(info.state)
+                        || "error".equalsIgnoreCase(info.state)
+                        || "canceled".equalsIgnoreCase(info.state)
+                        || "cancelled".equalsIgnoreCase(info.state)) {
                     safeSend(chatId, "Генерация не удалась: " + info.failReason);
                     return;
                 }
@@ -577,17 +622,21 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         ));
     }
 
-    private InlineKeyboardMarkup settingsKeyboard(Database.User user) {
+    private InlineKeyboardMarkup settingsMenuKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button("🖼️ Изменить формат", "settings:format_menu")),
+                List.of(button("📏 Изменить разрешение", "settings:resolution_menu")),
+                List.of(button("⬅️ Назад", "settings:back_to_model"))
+        ));
+    }
+
+    private InlineKeyboardMarkup formatKeyboard(Database.User user) {
         String format = user.outputFormat == null ? "auto" : user.outputFormat;
-        String resolution = user.resolution == null ? "2k" : user.resolution;
         String ratio = user.aspectRatio == null ? "auto" : user.aspectRatio;
         return new InlineKeyboardMarkup(List.of(
                 List.of(button(formatButtonLabel("🖼️ Авто", "auto", format), "settings:format:auto"),
                         button(formatButtonLabel("🖼️ PNG", "png", format), "settings:format:png"),
                         button(formatButtonLabel("🖼️ JPG", "jpg", format), "settings:format:jpg")),
-                List.of(button(resButtonLabel("📏 1K", "1k", resolution), "settings:res:1k"),
-                        button(resButtonLabel("📏 2K", "2k", resolution), "settings:res:2k"),
-                        button(resButtonLabel("📏 4K", "4k", resolution), "settings:res:4k")),
                 List.of(button(ratioButtonLabel("📐 1:1", "1:1", ratio), "settings:ratio:1:1"),
                         button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3"),
                         button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2")),
@@ -595,6 +644,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
                         button(ratioButtonLabel("📐 9:16", "9:16", ratio), "settings:ratio:9:16")),
                 List.of(button(ratioButtonLabel("📐 auto", "auto", ratio), "settings:ratio:auto")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private InlineKeyboardMarkup resolutionKeyboard(Database.User user) {
+        String resolution = user.resolution == null ? "2k" : user.resolution;
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(resButtonLabel("📏 1K", "1k", resolution), "settings:res:1k"),
+                        button(resButtonLabel("📏 2K", "2k", resolution), "settings:res:2k"),
+                        button(resButtonLabel("📏 4K", "4k", resolution), "settings:res:4k")),
                 List.of(button("⬅️ Назад", "settings:back"))
         ));
     }
@@ -677,12 +736,22 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "🔹 Баланса хватит на " + queries + " запросов. 1 генерация = " + formatNumber(cost) + " токенов";
     }
 
-    private String settingsText(Database.User user) {
+    private String settingsMenuText(Database.User user) {
         long costDefault = costForUserResolution(user, "2k");
         long cost4k = costForUserResolution(user, "4k");
         return "⚙️ Настройки\n" +
                 "Формат файла: " + formatLabel(user.outputFormat) + "\n" +
                 "Разрешение: " + resolutionLabel(user.resolution) + "\n" +
+                "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
+                "Стоимость генерации:\n" +
+                "1K = " + formatNumber(costDefault) + " токенов\n" +
+                "2K = " + formatNumber(costDefault) + " токенов\n" +
+                "4K = " + formatNumber(cost4k) + " токенов";
+    }
+
+    private String formatMenuText(Database.User user) {
+        return "🖼️ Формат изображения\n" +
+                "Формат файла: " + formatLabel(user.outputFormat) + "\n" +
                 "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                 "📐 Выберите формат создаваемого фото в Nano Banana\n" +
                 "1:1: идеально подходит для профильных фото в соцсетях, таких как VK, Telegram и т.д\n\n" +
@@ -691,7 +760,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "3:4: широко используемый формат для фотографий, карточек товаров и т.д.\n\n" +
                 "16:9: стандартный формат для видео, идеален для YouTube, VK и др.\n\n" +
                 "9:16: оптимальный формат для Stories в Telegram или вертикальных видео на YouTube\n\n" +
-                "auto: автоматически подберет нужный формат\n\n" +
+                "auto: автоматически подберет нужный формат";
+    }
+
+    private String resolutionMenuText(Database.User user) {
+        long costDefault = costForUserResolution(user, "2k");
+        long cost4k = costForUserResolution(user, "4k");
+        return "📏 Разрешение\n" +
+                "Текущее: " + resolutionLabel(user.resolution) + "\n\n" +
                 "Стоимость генерации:\n" +
                 "1K = " + formatNumber(costDefault) + " токенов\n" +
                 "2K = " + formatNumber(costDefault) + " токенов\n" +
@@ -742,7 +818,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         long earned = user == null ? 0 : user.referralEarned;
         String link = "https://t.me/" + config.botUsername + "?start=ref" + userId;
         return "🔹 Реферальная программа\n\n" +
-                "Получайте 5% токенами от каждой покупки тарифа приглашенного пользователя в боте.\n\n" +
+                "Приглашенному начисляется 50 000 токенов за переход по вашей ссылке.\n" +
+                "Вы получаете 2% токенами от каждой покупки приглашенного пользователя.\n\n" +
                 "👥 Приглашено пользователей: " + count + "\n" +
                 "🔶 Получено: " + formatNumber(earned) + " токенов\n\n" +
                 "🔗 Моя реферальная ссылка:\n" + link;
@@ -961,6 +1038,37 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             sb.append(alphabet.charAt(random.nextInt(alphabet.length())));
         }
         return sb.toString();
+    }
+
+    private boolean ensureSubscribed(long chatId, long userId) throws TelegramApiException {
+        if (isSubscribed(userId)) {
+            return true;
+        }
+        SendMessage msg = new SendMessage(String.valueOf(chatId),
+                "🔔 Перед использованием бота необходимо подписаться на канал:\nhttps://t.me/botorbita\n\n" +
+                        "После подписки нажмите кнопку ниже.");
+        msg.setReplyMarkup(subscribeKeyboard());
+        execute(msg);
+        return false;
+    }
+
+    private boolean isSubscribed(long userId) {
+        try {
+            GetChatMember get = new GetChatMember();
+            get.setChatId(String.valueOf(CHANNEL_ID));
+            get.setUserId(userId);
+            ChatMember member = execute(get);
+            String status = member.getStatus();
+            return !("left".equalsIgnoreCase(status) || "kicked".equalsIgnoreCase(status));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private InlineKeyboardMarkup subscribeKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button("✅ Я подписался", "sub:check"))
+        ));
     }
 
     private static class PurchaseOption {
