@@ -46,6 +46,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 public class AnnexAiBot extends TelegramLongPollingBot {
@@ -61,9 +63,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private final Database db;
     private final KieClient kieClient;
     private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private final ObjectMapper mapper = new ObjectMapper();
     private final OkHttpClient httpClient = new OkHttpClient();
     private final Set<Long> activeGenerations = ConcurrentHashMap.newKeySet();
+    private final Map<String, AlbumBuffer> albumBuffers = new ConcurrentHashMap<>();
 
     private final Map<String, PurchaseOption> purchaseOptions = Map.of(
             "50k", new PurchaseOption(50_000, 99),
@@ -136,15 +140,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             if (!ensureSubscribed(message.getChatId(), userId)) {
                 return;
             }
-            saveIncomingPhotos(userId, message.getPhoto());
+            boolean buffered = saveIncomingPhotos(userId, message);
             if (message.getCaption() != null && !message.getCaption().isBlank()) {
                 handlePrompt(user, message.getCaption());
             } else {
-                int count = db.countPendingImages(userId);
-                String replyText = "📷 Фото получено: " + count + "/10\n\n" +
-                        "Можете добавить ещё фото или отправить текстовый промпт ✏️";
-                SendMessage reply = new SendMessage(String.valueOf(message.getChatId()), replyText);
-                executeWithRetry(reply);
+                if (!buffered) {
+                    int count = db.countPendingImages(userId);
+                    String replyText = "📷 Фото получено: " + count + "/10\n\n" +
+                            "Можете добавить ещё фото или отправить текстовый промпт ✏️";
+                    SendMessage reply = new SendMessage(String.valueOf(message.getChatId()), replyText);
+                    executeWithRetry(reply);
+                }
             }
             return;
         }
@@ -221,6 +227,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.setCurrentModel(userId, MODEL_NANO_BANANA);
             user.currentModel = MODEL_NANO_BANANA;
             db.clearPendingImages(userId);
+            clearAlbumBuffers(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
@@ -228,6 +235,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.setCurrentModel(userId, MODEL_NANO_BANANA_PRO);
             user.currentModel = MODEL_NANO_BANANA_PRO;
             db.clearPendingImages(userId);
+            clearAlbumBuffers(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
@@ -449,6 +457,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         long cost = costForUser(user);
         if (user.balance < cost) {
             db.clearPendingImages(user.tgId);
+            clearAlbumBuffers(user.tgId);
             executeWithRetry(new SendMessage(String.valueOf(user.tgId),
                     "Недостаточно токенов. Пополните баланс в разделе «Купить токены».\n\n" +
                             "📷 Загруженные фото сброшены — после пополнения отправьте их заново."));
@@ -456,6 +465,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
 
+        flushUserAlbums(user.tgId, false);
         List<String> fileIds = db.consumePendingImages(user.tgId);
 
         db.addBalance(user.tgId, -cost);
@@ -1025,6 +1035,78 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         db.addPendingImage(userId, best.getFileId());
     }
 
+    private boolean saveIncomingPhotos(long userId, Message message) {
+        List<PhotoSize> photos = message.getPhoto();
+        if (photos == null || photos.isEmpty()) {
+            return false;
+        }
+        PhotoSize best = photos.get(photos.size() - 1);
+        String mediaGroupId = message.getMediaGroupId();
+        if (mediaGroupId != null && !mediaGroupId.isBlank()) {
+            handleAlbumPhoto(userId, message.getChatId(), mediaGroupId, best.getFileId());
+            return true;
+        }
+        db.addPendingImage(userId, best.getFileId());
+        return false;
+    }
+
+    private void handleAlbumPhoto(long userId, long chatId, String groupId, String fileId) {
+        AlbumBuffer buffer = albumBuffers.computeIfAbsent(groupId, key -> new AlbumBuffer(userId, chatId));
+        synchronized (buffer) {
+            buffer.fileIds.add(fileId);
+            buffer.lastUpdated = System.currentTimeMillis();
+            if (buffer.flushTask != null) {
+                buffer.flushTask.cancel(false);
+            }
+            buffer.flushTask = scheduler.schedule(() -> flushAlbum(groupId, true), 1500, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void flushAlbum(String groupId, boolean notify) {
+        AlbumBuffer buffer = albumBuffers.remove(groupId);
+        if (buffer == null) {
+            return;
+        }
+        synchronized (buffer) {
+            for (String fileId : buffer.fileIds) {
+                db.addPendingImage(buffer.userId, fileId);
+            }
+        }
+        if (notify) {
+            int count = db.countPendingImages(buffer.userId);
+            String replyText = "📷 Фото получено: " + count + "/10\n\n" +
+                    "Можете добавить ещё фото или отправить текстовый промпт ✏️";
+            safeSend(buffer.chatId, replyText);
+        }
+    }
+
+    private void flushUserAlbums(long userId, boolean notify) {
+        List<String> toFlush = new ArrayList<>();
+        for (Map.Entry<String, AlbumBuffer> entry : albumBuffers.entrySet()) {
+            if (entry.getValue().userId == userId) {
+                toFlush.add(entry.getKey());
+            }
+        }
+        for (String groupId : toFlush) {
+            flushAlbum(groupId, notify);
+        }
+    }
+
+    private void clearAlbumBuffers(long userId) {
+        List<String> toRemove = new ArrayList<>();
+        for (Map.Entry<String, AlbumBuffer> entry : albumBuffers.entrySet()) {
+            if (entry.getValue().userId == userId) {
+                toRemove.add(entry.getKey());
+            }
+        }
+        for (String groupId : toRemove) {
+            AlbumBuffer buffer = albumBuffers.remove(groupId);
+            if (buffer != null && buffer.flushTask != null) {
+                buffer.flushTask.cancel(false);
+            }
+        }
+    }
+
     private long costForUser(Database.User user) {
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
         return costForUserResolution(user, res);
@@ -1211,6 +1293,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             Thread.sleep(millis);
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private static class AlbumBuffer {
+        private final long userId;
+        private final long chatId;
+        private final List<String> fileIds = new ArrayList<>();
+        private long lastUpdated;
+        private ScheduledFuture<?> flushTask;
+
+        private AlbumBuffer(long userId, long chatId) {
+            this.userId = userId;
+            this.chatId = chatId;
         }
     }
 
