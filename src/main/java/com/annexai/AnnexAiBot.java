@@ -11,6 +11,7 @@ import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMem
 import org.telegram.telegrambots.meta.api.methods.send.SendInvoice;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
+import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.*;
 import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember;
@@ -875,7 +876,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             SendPhoto photo = new SendPhoto();
             photo.setChatId(String.valueOf(chatId));
             photo.setPhoto(new InputFile(tempFile.toFile()));
-            executeWithRetry(photo);
+            long size = Files.size(tempFile);
+            if (size > 10 * 1024 * 1024) {
+                SendDocument doc = new SendDocument();
+                doc.setChatId(String.valueOf(chatId));
+                doc.setDocument(new InputFile(tempFile.toFile()));
+                doc.setCaption("Файл слишком большой для фото, отправляю как документ.");
+                executeWithRetry(doc);
+            } else {
+                executeWithRetry(photo);
+            }
         } catch (Exception e) {
             safeSend(chatId, "Ошибка отправки изображения: " + e.getMessage());
         } finally {
@@ -1041,6 +1051,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private void executeWithRetry(SendPhoto photo) throws TelegramApiException {
         executeWithRetryInternal(() -> execute(photo), 3);
+    }
+
+    private void executeWithRetry(SendDocument doc) throws TelegramApiException {
+        executeWithRetryInternal(() -> execute(doc), 3);
     }
 
     private void executeWithRetry(EditMessageText edit) throws TelegramApiException {
