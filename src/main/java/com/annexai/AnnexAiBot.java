@@ -434,12 +434,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         List<String> fileIds = db.consumePendingImages(user.tgId);
 
         db.addBalance(user.tgId, -cost);
-        db.addSpent(user.tgId, cost);
-        db.recordModelUsage(user.tgId, MODEL_NANO_BANANA, cost);
 
         execute(new SendMessage(String.valueOf(user.tgId), "Запрос принят. Генерация началась 🍌"));
 
         executor.submit(() -> {
+            boolean success = false;
             try {
                 List<String> imageUrls = new ArrayList<>();
                 int i = 1;
@@ -459,46 +458,58 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 if (MODEL_NANO_BANANA.equals(model) && !imageUrls.isEmpty()) {
                     model = MODEL_NANO_BANANA_EDIT;
                 }
+                System.out.println("Kie request model=" + model + " res=" + resolution + " ratio=" + aspectRatio + " images=" + imageUrls.size());
                 String taskId = kieClient.createNanoBananaTask(model, prompt, imageUrls, aspectRatio, outputFormat, resolution);
 
-                pollTaskAndSend(taskId, user.tgId);
+                success = pollTaskAndSend(taskId, user.tgId);
             } catch (Exception e) {
-                safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage());
+                safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
+            } finally {
+                if (success) {
+                    db.addSpent(user.tgId, cost);
+                    db.recordModelUsage(user.tgId, normalizeModel(user.currentModel), cost);
+                } else {
+                    db.addBalance(user.tgId, cost);
+                }
             }
         });
     }
 
-    private void pollTaskAndSend(String taskId, long chatId) {
+    private boolean pollTaskAndSend(String taskId, long chatId) {
         int attempts = 120;
         for (int i = 0; i < attempts; i++) {
             try {
                 TimeUnit.SECONDS.sleep(3);
                 KieClient.TaskInfo info = kieClient.getTaskInfo(taskId);
+                if (i % 10 == 0) {
+                    System.out.println("Kie task " + taskId + " state=" + info.state);
+                }
                 if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state) || "completed".equalsIgnoreCase(info.state)) {
                     List<String> urls = extractResultUrls(info.resultJson);
                     if (urls.isEmpty()) {
-                        safeSend(chatId, "Готово, но без изображений. Попробуйте другой запрос.");
-                        return;
+                        safeSend(chatId, "Готово, но без изображений. Попробуйте другой запрос.\nТокены возвращены.");
+                        return false;
                     }
                     for (String url : urls) {
                         sendPhotoFromUrl(chatId, url);
                     }
-                    return;
+                    return true;
                 }
                 if ("failed".equalsIgnoreCase(info.state)
                         || "fail".equalsIgnoreCase(info.state)
                         || "error".equalsIgnoreCase(info.state)
                         || "canceled".equalsIgnoreCase(info.state)
                         || "cancelled".equalsIgnoreCase(info.state)) {
-                    safeSend(chatId, "Генерация не удалась: " + info.failReason);
-                    return;
+                    safeSend(chatId, "Генерация не удалась: " + info.failReason + "\nТокены возвращены.");
+                    return false;
                 }
             } catch (Exception e) {
-                safeSend(chatId, "Ошибка при проверке задачи: " + e.getMessage());
-                return;
+                safeSend(chatId, "Ошибка при проверке задачи: " + e.getMessage() + "\nТокены возвращены.");
+                return false;
             }
         }
-        safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.");
+        safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
+        return false;
     }
 
     private List<String> extractResultUrls(String resultJson) {
@@ -709,15 +720,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         edit.setMessageId(messageId);
         edit.setText(text);
         edit.setReplyMarkup(markup);
-        try {
-            execute(edit);
-        } catch (TelegramApiException e) {
-            String msg = e.getMessage();
-            if (msg != null && msg.contains("message is not modified")) {
-                return;
-            }
-            throw e;
-        }
+        executeWithRetry(edit);
     }
 
     private String modelInfoText(Database.User user) {
@@ -845,7 +848,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private void safeSend(long chatId, String text) {
         try {
-            execute(new SendMessage(String.valueOf(chatId), text));
+            executeWithRetry(new SendMessage(String.valueOf(chatId), text));
         } catch (Exception ignored) {
         }
     }
@@ -870,7 +873,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             SendPhoto photo = new SendPhoto();
             photo.setChatId(String.valueOf(chatId));
             photo.setPhoto(new InputFile(tempFile.toFile()));
-            execute(photo);
+            executeWithRetry(photo);
         } catch (Exception e) {
             safeSend(chatId, "Ошибка отправки изображения: " + e.getMessage());
         } finally {
@@ -1030,6 +1033,63 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return String.format("%,d", value).replace(',', ' ');
     }
 
+    private void executeWithRetry(SendMessage msg) throws TelegramApiException {
+        executeWithRetryInternal(() -> execute(msg), 3);
+    }
+
+    private void executeWithRetry(SendPhoto photo) throws TelegramApiException {
+        executeWithRetryInternal(() -> execute(photo), 3);
+    }
+
+    private void executeWithRetry(EditMessageText edit) throws TelegramApiException {
+        executeWithRetryInternal(() -> execute(edit), 3);
+    }
+
+    private void executeWithRetryInternal(ThrowingAction action, int attempts) throws TelegramApiException {
+        TelegramApiException last = null;
+        for (int i = 0; i < attempts; i++) {
+            try {
+                action.run();
+                return;
+            } catch (TelegramApiException e) {
+                String msg = e.getMessage();
+                if (msg != null && msg.contains("message is not modified")) {
+                    return;
+                }
+                last = e;
+                if (!isRetryable(e) || i == attempts - 1) {
+                    throw e;
+                }
+                sleep(500);
+            }
+        }
+        if (last != null) {
+            throw last;
+        }
+    }
+
+    private boolean isRetryable(TelegramApiException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof java.net.SocketException || cause instanceof java.net.UnknownHostException) {
+            return true;
+        }
+        String msg = e.getMessage();
+        return msg != null && (msg.contains("Connection reset") || msg.contains("NoHttpResponse"));
+    }
+
+    private void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @FunctionalInterface
+    private interface ThrowingAction {
+        void run() throws TelegramApiException;
+    }
+
     private String generatePromoCode() {
         String alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         SecureRandom random = new SecureRandom();
@@ -1048,7 +1108,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "🔔 Перед использованием бота необходимо подписаться на канал:\nhttps://t.me/botorbita\n\n" +
                         "После подписки нажмите кнопку ниже.");
         msg.setReplyMarkup(subscribeKeyboard());
-        execute(msg);
+        executeWithRetry(msg);
         return false;
     }
 
