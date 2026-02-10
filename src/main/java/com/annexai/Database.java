@@ -595,6 +595,21 @@ public class Database {
         return list;
     }
 
+    public synchronized int countPendingImages(long tgId) {
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT COUNT(*) AS cnt FROM pending_images WHERE user_id = ?")) {
+            ps.setLong(1, tgId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt("cnt");
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to count pending images", e);
+        }
+        return 0;
+    }
+
     public synchronized long countUsers() {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
                 "SELECT COUNT(*) AS cnt FROM users")) {

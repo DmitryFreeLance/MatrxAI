@@ -128,9 +128,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             if (message.getCaption() != null && !message.getCaption().isBlank()) {
                 handlePrompt(user, message.getCaption());
             } else {
-                SendMessage reply = new SendMessage(String.valueOf(message.getChatId()),
-                        "Фото получены. Теперь отправьте промпт отдельным сообщением ✏️");
-                execute(reply);
+                int count = db.countPendingImages(userId);
+                String replyText = "📷 Фото получено: " + count + "/10\n\n" +
+                        "Можете добавить ещё фото или отправить текстовый промпт ✏️";
+                SendMessage reply = new SendMessage(String.valueOf(message.getChatId()), replyText);
+                executeWithRetry(reply);
             }
             return;
         }
@@ -476,7 +478,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private boolean pollTaskAndSend(String taskId, long chatId) {
-        int attempts = 120;
+        int attempts = 200;
         for (int i = 0; i < attempts; i++) {
             try {
                 TimeUnit.SECONDS.sleep(3);
