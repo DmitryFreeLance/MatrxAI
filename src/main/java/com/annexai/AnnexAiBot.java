@@ -1251,7 +1251,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private boolean isRetryable(TelegramApiException e) {
         Throwable cause = e.getCause();
-        if (cause instanceof java.net.SocketException || cause instanceof java.net.UnknownHostException) {
+        if (cause instanceof java.net.SocketException
+                || cause instanceof java.net.UnknownHostException
+                || cause instanceof java.net.SocketTimeoutException) {
             return true;
         }
         String msg = e.getMessage();

@@ -108,7 +108,11 @@ public class KieClient {
             }
             String respBody = response.body() != null ? response.body().string() : "{}";
             JsonNode json = mapper.readTree(respBody);
-            return json.path("data").path("taskId").asText();
+            String taskId = json.path("data").path("taskId").asText();
+            if (taskId == null || taskId.isBlank()) {
+                throw new IOException("Kie createTask returned empty taskId: " + respBody);
+            }
+            return taskId;
         }
     }
 
