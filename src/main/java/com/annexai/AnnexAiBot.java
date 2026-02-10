@@ -125,6 +125,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         Long referrerId = extractReferrer(message.getText());
 
         Database.User user = db.getOrCreateUser(userId, username, firstName, lastName, referrerId);
+        if (db.ensureWelcomeBonus(userId)) {
+            user.balance += 10_000;
+        }
         if (referrerId != null && user.referrerId == null) {
             boolean linked = db.setReferrerIfEmpty(userId, referrerId);
             if (linked) {
@@ -518,7 +521,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 System.out.println("Kie request model=" + model + " res=" + resolution + " ratio=" + aspectRatio + " images=" + imageUrls.size());
                 String taskId = kieClient.createNanoBananaTask(model, prompt, imageUrls, aspectRatio, outputFormat, resolution);
 
-                success = pollTaskAndSend(taskId, user.tgId);
+                success = pollTaskAndSend(taskId, user.tgId, model);
             } catch (Exception e) {
                 safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
             } finally {
@@ -533,7 +536,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         });
     }
 
-    private boolean pollTaskAndSend(String taskId, long chatId) {
+    private boolean pollTaskAndSend(String taskId, long chatId, String modelUsed) {
         int attempts = 200;
         for (int i = 0; i < attempts; i++) {
             try {
@@ -551,6 +554,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     for (String url : urls) {
                         sendPhotoFromUrl(chatId, url);
                     }
+                    maybeSendNanoWarning(chatId, modelUsed);
                     return true;
                 }
                 if ("failed".equalsIgnoreCase(info.state)
@@ -694,8 +698,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup settingsMenuKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("📐 Изменить формат кадра", "settings:format_menu")),
-                List.of(button("📏 Изменить разрешение", "settings:resolution_menu")),
+                List.of(button("📐 Изменить формат", "settings:format_menu")),
+                List.of(button("📏 Качество", "settings:resolution_menu")),
                 List.of(button("⬅️ Назад", "settings:back_to_model"))
         ));
     }
@@ -981,6 +985,28 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 Files.deleteIfExists(file);
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    private void maybeSendNanoWarning(long chatId, String modelUsed) {
+        if (MODEL_NANO_BANANA_PRO.equalsIgnoreCase(modelUsed)) {
+            return;
+        }
+        if (!MODEL_NANO_BANANA.equalsIgnoreCase(modelUsed) && !MODEL_NANO_BANANA_EDIT.equalsIgnoreCase(modelUsed)) {
+            return;
+        }
+        if (!db.markNanoWarnedIfNeeded(chatId)) {
+            return;
+        }
+        SendMessage msg = new SendMessage(String.valueOf(chatId),
+                "❗️ Обычная версия Nano Banana всегда работает с ошибками.\n" +
+                        "Рекомендуем использовать Pro режим для качественных фотографий.");
+        msg.setReplyMarkup(new InlineKeyboardMarkup(List.of(
+                List.of(button("💳 Купить токены", "menu:buy"))
+        )));
+        try {
+            executeWithRetry(msg);
+        } catch (Exception ignored) {
         }
     }
 

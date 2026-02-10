@@ -41,7 +41,9 @@ public class Database {
                     current_model TEXT,
                     output_format TEXT,
                     resolution TEXT,
-                    aspect_ratio TEXT
+                    aspect_ratio TEXT,
+                    welcome_bonus_given INTEGER NOT NULL DEFAULT 0,
+                    nano_warned INTEGER NOT NULL DEFAULT 0
                 )
             """);
 
@@ -86,6 +88,14 @@ public class Database {
             }
             try {
                 st.execute("ALTER TABLE users ADD COLUMN aspect_ratio TEXT");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN welcome_bonus_given INTEGER NOT NULL DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN nano_warned INTEGER NOT NULL DEFAULT 0");
             } catch (SQLException ignored) {
             }
 
@@ -170,8 +180,8 @@ public class Database {
 
         String created = now();
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio) " +
-                        "VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto')")) {
+                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned) " +
+                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0)")) {
             ps.setLong(1, tgId);
             ps.setString(2, username);
             ps.setString(3, firstName);
@@ -192,7 +202,7 @@ public class Database {
 
     public synchronized User getUser(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio FROM users WHERE tg_id = ?")) {
+                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned FROM users WHERE tg_id = ?")) {
             ps.setLong(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -213,6 +223,8 @@ public class Database {
                     u.outputFormat = rs.getString("output_format");
                     u.resolution = rs.getString("resolution");
                     u.aspectRatio = rs.getString("aspect_ratio");
+                    u.welcomeBonusGiven = rs.getInt("welcome_bonus_given") == 1;
+                    u.nanoWarned = rs.getInt("nano_warned") == 1;
                     return u;
                 }
             }
@@ -254,6 +266,49 @@ public class Database {
 
     public synchronized void setAspectRatio(long tgId, String ratio) {
         updateUserField(tgId, "aspect_ratio", ratio);
+    }
+
+    public synchronized boolean ensureWelcomeBonus(long tgId) {
+        try (Connection conn = connect();
+             PreparedStatement sel = conn.prepareStatement("SELECT welcome_bonus_given FROM users WHERE tg_id = ?")) {
+            sel.setLong(1, tgId);
+            try (ResultSet rs = sel.executeQuery()) {
+                if (!rs.next()) {
+                    return false;
+                }
+                if (rs.getInt("welcome_bonus_given") == 1) {
+                    return false;
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to read welcome bonus flag", e);
+        }
+
+        final int[] rows = {0};
+        runWithRetry(() -> {
+            try (Connection conn = connect();
+                 PreparedStatement upd = conn.prepareStatement(
+                         "UPDATE users SET balance = balance + 10000, welcome_bonus_given = 1, updated_at = ? WHERE tg_id = ? AND welcome_bonus_given = 0")) {
+                upd.setString(1, now());
+                upd.setLong(2, tgId);
+                rows[0] = upd.executeUpdate();
+            }
+        }, "Failed to apply welcome bonus");
+        return rows[0] > 0;
+    }
+
+    public synchronized boolean markNanoWarnedIfNeeded(long tgId) {
+        final int[] rows = {0};
+        runWithRetry(() -> {
+            try (Connection conn = connect();
+                 PreparedStatement upd = conn.prepareStatement(
+                         "UPDATE users SET nano_warned = 1, updated_at = ? WHERE tg_id = ? AND nano_warned = 0")) {
+                upd.setString(1, now());
+                upd.setLong(2, tgId);
+                rows[0] = upd.executeUpdate();
+            }
+        }, "Failed to update nano warning flag");
+        return rows[0] > 0;
     }
 
     private void updateUserField(long tgId, String field, String value) {
@@ -738,6 +793,8 @@ public class Database {
         public String outputFormat;
         public String resolution;
         public String aspectRatio;
+        public boolean welcomeBonusGiven;
+        public boolean nanoWarned;
     }
 
     public static class PendingAction {
