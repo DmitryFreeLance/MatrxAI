@@ -311,6 +311,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, profileText(user), profileKeyboard());
             return;
         }
+        if ("menu:invite".equals(data)) {
+            editMessage(chatId, messageId, referralText(userId), referralKeyboard());
+            return;
+        }
         if ("profile:back".equals(data)) {
             sendStart(chatId, user);
             return;
@@ -650,6 +654,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("🧠 Выбор модели", "menu:models")),
                 List.of(button("💳 Купить токены", "menu:buy")),
+                List.of(button("🔗 Пригласить друга", "menu:invite")),
                 List.of(button("👤 Мой профиль", "menu:profile"))
         ));
     }
@@ -719,7 +724,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private InlineKeyboardMarkup profileKeyboard() {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("🧾 Мои платежи", "profile:payments")),
-                List.of(button("🔗 Пригласить друга", "profile:ref")),
                 List.of(button("⬅️ Назад", "profile:back"))
         ));
     }
@@ -732,7 +736,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup referralKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("⬅️ Назад", "menu:profile"))
+                List.of(button("⬅️ Назад", "menu:start"))
         ));
     }
 
@@ -853,6 +857,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String referralText(long userId) {
         long count = db.countReferrals(userId);
+        String invitees = db.listReferrals(userId, 30);
         Database.User user = db.getUser(userId);
         long earned = user == null ? 0 : user.referralEarned;
         String link = "https://t.me/" + config.botUsername + "?start=ref" + userId;
@@ -861,6 +866,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "Вы получаете 2% токенами от каждой покупки приглашенного пользователя.\n\n" +
                 "👥 Приглашено пользователей: " + count + "\n" +
                 "🔶 Получено: " + formatNumber(earned) + " токенов\n\n" +
+                "👤 Список приглашенных:\n" + invitees + "\n\n" +
                 "🔗 Моя реферальная ссылка:\n" + link;
     }
 
@@ -916,6 +922,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     photo.setPhoto(new InputFile(compressedFile.toFile()));
                     executeWithRetry(photo);
                 }
+                safeSend(chatId, "🗂️ Качественная версия (без сжатия) будет загружена файлом в течение 5 минут.");
                 SendDocument doc = new SendDocument();
                 doc.setChatId(String.valueOf(chatId));
                 doc.setDocument(new InputFile(tempFile.toFile()));

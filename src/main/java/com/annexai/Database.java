@@ -664,6 +664,39 @@ public class Database {
         return 0;
     }
 
+    public synchronized String listReferrals(long tgId, int limit) {
+        StringBuilder sb = new StringBuilder();
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT tg_id, username, first_name FROM users WHERE referrer_id = ? ORDER BY created_at DESC LIMIT ?")) {
+            ps.setLong(1, tgId);
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                int idx = 1;
+                while (rs.next()) {
+                    long id = rs.getLong("tg_id");
+                    String username = rs.getString("username");
+                    String firstName = rs.getString("first_name");
+                    sb.append(idx).append(". ");
+                    if (username != null && !username.isBlank()) {
+                        sb.append("@").append(username);
+                    } else if (firstName != null && !firstName.isBlank()) {
+                        sb.append(firstName);
+                    } else {
+                        sb.append("ID ").append(id);
+                    }
+                    sb.append("\n");
+                    idx++;
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to list referrals", e);
+        }
+        if (sb.length() == 0) {
+            return "Пока нет приглашенных.";
+        }
+        return sb.toString().trim();
+    }
+
     public synchronized boolean setReferrerIfEmpty(long tgId, long referrerId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
                 "UPDATE users SET referrer_id = ? WHERE tg_id = ? AND referrer_id IS NULL AND tg_id <> ?")) {
