@@ -595,6 +595,16 @@ public class Database {
         return list;
     }
 
+    public synchronized void clearPendingImages(long tgId) {
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM pending_images WHERE user_id = ?")) {
+            ps.setLong(1, tgId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to clear pending images", e);
+        }
+    }
+
     public synchronized int countPendingImages(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
                 "SELECT COUNT(*) AS cnt FROM pending_images WHERE user_id = ?")) {

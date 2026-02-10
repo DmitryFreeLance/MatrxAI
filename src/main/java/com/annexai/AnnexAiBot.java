@@ -27,6 +27,15 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.security.SecureRandom;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,6 +43,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +63,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ObjectMapper mapper = new ObjectMapper();
     private final OkHttpClient httpClient = new OkHttpClient();
+    private final Set<Long> activeGenerations = ConcurrentHashMap.newKeySet();
 
     private final Map<String, PurchaseOption> purchaseOptions = Map.of(
             "50k", new PurchaseOption(50_000, 99),
@@ -209,12 +220,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("model:nano".equals(data)) {
             db.setCurrentModel(userId, MODEL_NANO_BANANA);
             user.currentModel = MODEL_NANO_BANANA;
+            db.clearPendingImages(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
         if ("model:nano-pro".equals(data)) {
             db.setCurrentModel(userId, MODEL_NANO_BANANA_PRO);
             user.currentModel = MODEL_NANO_BANANA_PRO;
+            db.clearPendingImages(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
@@ -428,9 +441,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
+        if (!activeGenerations.add(user.tgId)) {
+            executeWithRetry(new SendMessage(String.valueOf(user.tgId),
+                    "⏳ Уже идет генерация. Дождитесь завершения перед новым запросом."));
+            return;
+        }
         long cost = costForUser(user);
         if (user.balance < cost) {
-            execute(new SendMessage(String.valueOf(user.tgId), "Недостаточно токенов. Пополните баланс в разделе «Купить токены»."));
+            db.clearPendingImages(user.tgId);
+            executeWithRetry(new SendMessage(String.valueOf(user.tgId),
+                    "Недостаточно токенов. Пополните баланс в разделе «Купить токены».\n\n" +
+                            "📷 Загруженные фото сброшены — после пополнения отправьте их заново."));
+            activeGenerations.remove(user.tgId);
             return;
         }
 
@@ -474,6 +496,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 } else {
                     db.addBalance(user.tgId, cost);
                 }
+                activeGenerations.remove(user.tgId);
             }
         });
     }
@@ -858,6 +881,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private void sendPhotoFromUrl(long chatId, String url) {
         Path tempFile = null;
+        Path compressedFile = null;
         try {
             Request request = new Request.Builder()
                     .url(url)
@@ -873,27 +897,116 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     Files.copy(in, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 }
             }
-            SendPhoto photo = new SendPhoto();
-            photo.setChatId(String.valueOf(chatId));
-            photo.setPhoto(new InputFile(tempFile.toFile()));
             long size = Files.size(tempFile);
             if (size > 10 * 1024 * 1024) {
+                compressedFile = compressToTelegramPhoto(tempFile);
+                if (compressedFile != null) {
+                    SendPhoto photo = new SendPhoto();
+                    photo.setChatId(String.valueOf(chatId));
+                    photo.setPhoto(new InputFile(compressedFile.toFile()));
+                    executeWithRetry(photo);
+                }
                 SendDocument doc = new SendDocument();
                 doc.setChatId(String.valueOf(chatId));
                 doc.setDocument(new InputFile(tempFile.toFile()));
-                doc.setCaption("Файл слишком большой для фото, отправляю как документ.");
+                doc.setCaption("Качественная версия (без сжатия)");
                 executeWithRetry(doc);
             } else {
+                SendPhoto photo = new SendPhoto();
+                photo.setChatId(String.valueOf(chatId));
+                photo.setPhoto(new InputFile(tempFile.toFile()));
                 executeWithRetry(photo);
             }
         } catch (Exception e) {
             safeSend(chatId, "Ошибка отправки изображения: " + e.getMessage());
         } finally {
+            if (compressedFile != null) {
+                try {
+                    Files.deleteIfExists(compressedFile);
+                } catch (Exception ignored) {
+                }
+            }
             if (tempFile != null) {
                 try {
                     Files.deleteIfExists(tempFile);
                 } catch (Exception ignored) {
                 }
+            }
+        }
+    }
+
+    private Path compressToTelegramPhoto(Path original) {
+        try {
+            BufferedImage source = ImageIO.read(original.toFile());
+            if (source == null) {
+                return null;
+            }
+            BufferedImage base = toRgb(source);
+            int width = base.getWidth();
+            int height = base.getHeight();
+            float[] qualities = new float[]{0.92f, 0.85f, 0.75f, 0.65f, 0.55f, 0.45f, 0.35f};
+            double scale = 1.0;
+
+            for (int scaleTry = 0; scaleTry < 4; scaleTry++) {
+                BufferedImage scaled = scale == 1.0 ? base : resize(base, (int) (width * scale), (int) (height * scale));
+                for (float q : qualities) {
+                    byte[] data = writeJpeg(scaled, q);
+                    if (data != null && data.length <= 10 * 1024 * 1024) {
+                        Path out = Files.createTempFile("kie_compressed_", ".jpg");
+                        Files.write(out, data);
+                        return out;
+                    }
+                }
+                scale *= 0.85;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private BufferedImage toRgb(BufferedImage source) {
+        BufferedImage rgb = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = rgb.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(source, 0, 0, null);
+        g.dispose();
+        return rgb;
+    }
+
+    private BufferedImage resize(BufferedImage source, int width, int height) {
+        BufferedImage resized = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = resized.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.drawImage(source, 0, 0, width, height, null);
+        g.dispose();
+        return resized;
+    }
+
+    private byte[] writeJpeg(BufferedImage image, float quality) {
+        ImageWriter writer = null;
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
+            if (!writers.hasNext()) {
+                return null;
+            }
+            writer = writers.next();
+            ImageWriteParam param = writer.getDefaultWriteParam();
+            if (param.canWriteCompressed()) {
+                param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                param.setCompressionQuality(quality);
+            }
+            try (ImageOutputStream ios = ImageIO.createImageOutputStream(baos)) {
+                writer.setOutput(ios);
+                writer.write(null, new IIOImage(image, null, null), param);
+            }
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (writer != null) {
+                writer.dispose();
             }
         }
     }
