@@ -694,16 +694,15 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup settingsMenuKeyboard() {
         return new InlineKeyboardMarkup(List.of(
+                List.of(button("📐 Изменить формат кадра", "settings:format_menu")),
                 List.of(button("📏 Изменить разрешение", "settings:resolution_menu")),
                 List.of(button("⬅️ Назад", "settings:back_to_model"))
         ));
     }
 
     private InlineKeyboardMarkup formatKeyboard(Database.User user) {
-        String format = user.outputFormat == null ? "auto" : user.outputFormat;
         String ratio = user.aspectRatio == null ? "auto" : user.aspectRatio;
         return new InlineKeyboardMarkup(List.of(
-                List.of(button(formatButtonLabel("🖼️ Авто", "auto", format), "settings:format:auto")),
                 List.of(button(ratioButtonLabel("📐 1:1", "1:1", ratio), "settings:ratio:1:1"),
                         button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3"),
                         button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2")),
