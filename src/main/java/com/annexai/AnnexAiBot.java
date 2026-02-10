@@ -263,8 +263,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         if (data.startsWith("settings:format:")) {
             String format = data.substring("settings:format:".length());
-            db.setOutputFormat(userId, format);
-            user.outputFormat = format;
+            if (!"auto".equalsIgnoreCase(format)) {
+                executeWithRetry(new SendMessage(String.valueOf(chatId), "Сейчас доступен только автоматический формат."));
+                return;
+            }
+            db.setOutputFormat(userId, "auto");
+            user.outputFormat = "auto";
             editMessage(chatId, messageId, formatMenuText(user), formatKeyboard(user));
             return;
         }
@@ -690,7 +694,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup settingsMenuKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("🖼️ Изменить формат", "settings:format_menu")),
                 List.of(button("📏 Изменить разрешение", "settings:resolution_menu")),
                 List.of(button("⬅️ Назад", "settings:back_to_model"))
         ));
@@ -700,9 +703,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         String format = user.outputFormat == null ? "auto" : user.outputFormat;
         String ratio = user.aspectRatio == null ? "auto" : user.aspectRatio;
         return new InlineKeyboardMarkup(List.of(
-                List.of(button(formatButtonLabel("🖼️ Авто", "auto", format), "settings:format:auto"),
-                        button(formatButtonLabel("🖼️ PNG", "png", format), "settings:format:png"),
-                        button(formatButtonLabel("🖼️ JPG", "jpg", format), "settings:format:jpg")),
+                List.of(button(formatButtonLabel("🖼️ Авто", "auto", format), "settings:format:auto")),
                 List.of(button(ratioButtonLabel("📐 1:1", "1:1", ratio), "settings:ratio:1:1"),
                         button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3"),
                         button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2")),
@@ -798,7 +799,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         long costDefault = costForUserResolution(user, "2k");
         long cost4k = costForUserResolution(user, "4k");
         return "⚙️ Настройки\n" +
-                "Формат файла: " + formatLabel(user.outputFormat) + "\n" +
+                "Формат файла: автоматический\n" +
                 "Разрешение: " + resolutionLabel(user.resolution) + "\n" +
                 "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                 "Стоимость генерации:\n" +
@@ -809,7 +810,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String formatMenuText(Database.User user) {
         return "🖼️ Формат изображения\n" +
-                "Формат файла: " + formatLabel(user.outputFormat) + "\n" +
+                "Формат файла: автоматический\n" +
                 "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                 "📐 Выберите формат создаваемого фото в Nano Banana\n" +
                 "1:1: идеально подходит для профильных фото в соцсетях, таких как VK, Telegram и т.д\n\n" +
