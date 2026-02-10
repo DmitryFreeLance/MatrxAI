@@ -65,6 +65,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private final OkHttpClient httpClient = new OkHttpClient();
     private final Set<Long> activeGenerations = ConcurrentHashMap.newKeySet();
     private final Map<Long, String> lastAlbumNotice = new ConcurrentHashMap<>();
+    private final Set<Long> modelSelectedThisSession = ConcurrentHashMap.newKeySet();
 
     private final Map<String, PurchaseOption> purchaseOptions = Map.of(
             "50k", new PurchaseOption(50_000, 99),
@@ -157,6 +158,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             String text = message.getText().trim();
             if (text.startsWith("/start")) {
                 if (ensureSubscribed(message.getChatId(), userId)) {
+                    modelSelectedThisSession.remove(userId);
                     sendStart(message.getChatId(), user);
                 }
                 return;
@@ -184,7 +186,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 }
             }
 
-            if (user.currentModel != null && !text.startsWith("/")) {
+            if (!text.startsWith("/")) {
+                if (!modelSelectedThisSession.contains(userId) || user.currentModel == null) {
+                    executeWithRetry(new SendMessage(String.valueOf(message.getChatId()),
+                            "Сначала выберите модель через меню /start."));
+                    return;
+                }
                 handlePrompt(user, text);
                 return;
             }
@@ -214,6 +221,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
 
         if ("menu:start".equals(data)) {
+            modelSelectedThisSession.remove(userId);
             sendStart(chatId, user);
             return;
         }
@@ -225,6 +233,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.setCurrentModel(userId, MODEL_NANO_BANANA);
             user.currentModel = MODEL_NANO_BANANA;
             db.clearPendingImages(userId);
+            modelSelectedThisSession.add(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
@@ -232,6 +241,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.setCurrentModel(userId, MODEL_NANO_BANANA_PRO);
             user.currentModel = MODEL_NANO_BANANA_PRO;
             db.clearPendingImages(userId);
+            modelSelectedThisSession.add(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
