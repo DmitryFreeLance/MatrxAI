@@ -43,7 +43,9 @@ public class Database {
                     resolution TEXT,
                     aspect_ratio TEXT,
                     welcome_bonus_given INTEGER NOT NULL DEFAULT 0,
-                    nano_warned INTEGER NOT NULL DEFAULT 0
+                    nano_warned INTEGER NOT NULL DEFAULT 0,
+                    midjourney_raw_enabled INTEGER NOT NULL DEFAULT 1,
+                    midjourney_translate_enabled INTEGER NOT NULL DEFAULT 1
                 )
             """);
 
@@ -96,6 +98,14 @@ public class Database {
             }
             try {
                 st.execute("ALTER TABLE users ADD COLUMN nano_warned INTEGER NOT NULL DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN midjourney_raw_enabled INTEGER NOT NULL DEFAULT 1");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN midjourney_translate_enabled INTEGER NOT NULL DEFAULT 1");
             } catch (SQLException ignored) {
             }
 
@@ -180,8 +190,8 @@ public class Database {
 
         String created = now();
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned) " +
-                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0)")) {
+                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled) " +
+                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1)")) {
             ps.setLong(1, tgId);
             ps.setString(2, username);
             ps.setString(3, firstName);
@@ -202,7 +212,7 @@ public class Database {
 
     public synchronized User getUser(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned FROM users WHERE tg_id = ?")) {
+                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled FROM users WHERE tg_id = ?")) {
             ps.setLong(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -225,6 +235,8 @@ public class Database {
                     u.aspectRatio = rs.getString("aspect_ratio");
                     u.welcomeBonusGiven = rs.getInt("welcome_bonus_given") == 1;
                     u.nanoWarned = rs.getInt("nano_warned") == 1;
+                    u.midjourneyRawEnabled = rs.getInt("midjourney_raw_enabled") == 1;
+                    u.midjourneyTranslateEnabled = rs.getInt("midjourney_translate_enabled") == 1;
                     return u;
                 }
             }
@@ -266,6 +278,14 @@ public class Database {
 
     public synchronized void setAspectRatio(long tgId, String ratio) {
         updateUserField(tgId, "aspect_ratio", ratio);
+    }
+
+    public synchronized void setMidjourneyRawEnabled(long tgId, boolean enabled) {
+        updateUserField(tgId, "midjourney_raw_enabled", enabled ? "1" : "0");
+    }
+
+    public synchronized void setMidjourneyTranslateEnabled(long tgId, boolean enabled) {
+        updateUserField(tgId, "midjourney_translate_enabled", enabled ? "1" : "0");
     }
 
     public synchronized boolean ensureWelcomeBonus(long tgId) {
@@ -830,6 +850,8 @@ public class Database {
         public String aspectRatio;
         public boolean welcomeBonusGiven;
         public boolean nanoWarned;
+        public boolean midjourneyRawEnabled;
+        public boolean midjourneyTranslateEnabled;
     }
 
     public static class PendingAction {

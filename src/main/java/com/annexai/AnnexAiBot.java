@@ -238,7 +238,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("settings".equals(data)) {
-            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard());
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
         if ("settings:format_menu".equals(data)) {
@@ -246,6 +246,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("settings:resolution_menu".equals(data)) {
+            if (isMidjourneyModel(normalizeModel(user.currentModel))) {
+                executeWithRetry(new SendMessage(String.valueOf(chatId), "Для Midjourney качество не настраивается."));
+                return;
+            }
             editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
             return;
         }
@@ -261,10 +265,34 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if (data.startsWith("settings:res:")) {
+            if (isMidjourneyModel(normalizeModel(user.currentModel))) {
+                executeWithRetry(new SendMessage(String.valueOf(chatId), "Для Midjourney качество не настраивается."));
+                return;
+            }
             String res = data.substring("settings:res:".length());
             db.setResolution(userId, res);
             user.resolution = res;
             editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
+            return;
+        }
+        if ("settings:raw_toggle".equals(data)) {
+            if (!isMidjourneyModel(normalizeModel(user.currentModel))) {
+                return;
+            }
+            boolean next = !user.midjourneyRawEnabled;
+            db.setMidjourneyRawEnabled(userId, next);
+            user.midjourneyRawEnabled = next;
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
+            return;
+        }
+        if ("settings:translate_toggle".equals(data)) {
+            if (!isMidjourneyModel(normalizeModel(user.currentModel))) {
+                return;
+            }
+            boolean next = !user.midjourneyTranslateEnabled;
+            db.setMidjourneyTranslateEnabled(userId, next);
+            user.midjourneyTranslateEnabled = next;
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
         if (data.startsWith("settings:ratio:")) {
@@ -275,7 +303,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("settings:back".equals(data)) {
-            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard());
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
         if ("settings:back_to_model".equals(data)) {
@@ -541,7 +569,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 String model = normalizeModel(user.currentModel);
                 String taskId;
                 if (isMidjourneyModel(model)) {
-                    String preparedPrompt = prepareMidjourneyPrompt(prompt);
+                    String preparedPrompt = prepareMidjourneyPrompt(user, prompt);
                     String taskModel = MODEL_MIDJOURNEY_FAST;
                     System.out.println("Kie request model=" + taskModel + " ratio=" + aspectRatio + " images=" + imageUrls.size());
                     taskId = kieClient.createMidjourneyTask(taskModel, preparedPrompt, imageUrls, aspectRatio, outputFormat);
@@ -739,7 +767,15 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         ));
     }
 
-    private InlineKeyboardMarkup settingsMenuKeyboard() {
+    private InlineKeyboardMarkup settingsMenuKeyboard(Database.User user) {
+        if (isMidjourneyModel(normalizeModel(user.currentModel))) {
+            return new InlineKeyboardMarkup(List.of(
+                    List.of(button("📐 Изменить формат", "settings:format_menu")),
+                    List.of(button(toggleLabel("RAW-MODE", user.midjourneyRawEnabled), "settings:raw_toggle")),
+                    List.of(button(toggleLabel("Автоперевод", user.midjourneyTranslateEnabled), "settings:translate_toggle")),
+                    List.of(button("⬅️ Назад", "settings:back_to_model"))
+            ));
+        }
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("📐 Изменить формат", "settings:format_menu")),
                 List.of(button("📏 Качество", "settings:resolution_menu")),
@@ -843,8 +879,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     "– Для смешивания изображений загрузите от двух до пяти фотографий.\n\n" +
                     "⚙️ Настройки · помогут улучшить качество\n" +
                     "Формат фото: " + mapAspectRatio(user.aspectRatio) + "\n" +
-                    "Автоперевод: включен\n" +
-                    "RAW Mode: включен\n\n" +
+                    "Автоперевод: " + (user.midjourneyTranslateEnabled ? "включен" : "выключен") + "\n" +
+                    "RAW-MODE: " + (user.midjourneyRawEnabled ? "включен" : "выключен") + "\n\n" +
                     "🔹 Баланса хватит на " + queries + " запросов.\n" +
                     "1 генерация = " + formatNumber(cost) + " токенов.";
         }
@@ -866,8 +902,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isMidjourneyModel(normalizeModel(user.currentModel))) {
             return "⚙️ Настройки\n" +
                     "Формат кадра: " + mapAspectRatio(user.aspectRatio) + "\n" +
-                    "Автоперевод: включен\n" +
-                    "RAW Mode: включен\n\n" +
+                    "Автоперевод: " + (user.midjourneyTranslateEnabled ? "включен" : "выключен") + "\n" +
+                    "RAW-MODE: " + (user.midjourneyRawEnabled ? "включен" : "выключен") + "\n\n" +
                     "Стоимость генерации:\n" +
                     "1 генерация = " + formatNumber(18_000) + " токенов";
         }
@@ -910,7 +946,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String buyText() {
-        return "Выберите пакет токенов и оплатите через ЮKassa прямо в Telegram. После успешной оплаты токены начислятся автоматически.";
+        return "🤩 Наш бот предоставляет вам лучший сервис без каких либо ограничений и продолжает это делать ежедневно 24/7.\n" +
+                "Выберите пакет токенов ниже — оплата проходит прямо в Telegram, а пополнение происходит мгновенно.\n" +
+                "<b>Токены расходуются только за реальные генерации, всё прозрачно и без скрытых условий.</b>\n";
     }
 
     private String profileText(Database.User user) {
@@ -1299,14 +1337,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 || MODEL_MIDJOURNEY_FAST.equalsIgnoreCase(model);
     }
 
-    private String prepareMidjourneyPrompt(String prompt) {
+    private String prepareMidjourneyPrompt(Database.User user, String prompt) {
         String base = prompt == null ? "" : prompt.trim();
-        String translated = autoTranslateToEnglish(base);
+        boolean translate = user == null || user.midjourneyTranslateEnabled;
+        boolean rawMode = user == null || user.midjourneyRawEnabled;
+        String translated = translate ? autoTranslateToEnglish(base) : base;
         if (translated.isBlank()) {
-            return "--style raw";
+            return rawMode ? "--style raw" : translated;
         }
         String lower = translated.toLowerCase(Locale.ROOT);
-        if (lower.contains("--style raw")) {
+        if (lower.contains("--style raw") || !rawMode) {
             return translated;
         }
         return translated + " --style raw";
@@ -1377,6 +1417,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return "✅ " + label;
         }
         return label;
+    }
+
+    private String toggleLabel(String label, boolean enabled) {
+        return label + ": " + (enabled ? "включен" : "выключен");
     }
 
     private Long extractReferrer(String text) {
