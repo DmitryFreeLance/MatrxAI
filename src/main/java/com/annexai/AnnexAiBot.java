@@ -534,18 +534,20 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         db.addBalance(user.tgId, -cost);
 
         String modelLabel = modelLabel(normalizeModel(user.currentModel));
-        String resolutionLabel = resolutionLabel(user.resolution);
-        String formatLabel = formatLabel(user.outputFormat);
         String ratioLabel = aspectRatioLabel(user.aspectRatio);
         StringBuilder startText = new StringBuilder("✅ Запрос принят. Генерация началась\n\n");
         startText.append("🧠 Модель: ").append(modelLabel).append("\n");
         if (isMidjourney) {
-            String modeLabel = fileIds.isEmpty() ? "Текст → Фото (Fast)" : "Фото → Фото (Fast)";
-            startText.append("⚙️ Режим: ").append(modeLabel).append("\n");
+            startText.append("📐 Формат: ").append(ratioLabel).append("\n");
+            startText.append("Автоперевод: ").append(user.midjourneyTranslateEnabled ? "включен" : "выключен").append("\n");
+            startText.append("RAW-MODE: ").append(user.midjourneyRawEnabled ? "включен" : "выключен").append("\n");
+        } else {
+            String resolutionLabel = resolutionLabel(user.resolution);
+            String formatLabel = formatLabel(user.outputFormat);
+            startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
+            startText.append("📐 Формат: ").append(ratioLabel).append("\n");
+            startText.append("🖼️ Файл: ").append(formatLabel).append("\n");
         }
-        startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
-        startText.append("📐 Формат: ").append(ratioLabel).append("\n");
-        startText.append("🖼️ Файл: ").append(formatLabel).append("\n");
         startText.append("💰 Стоимость: ").append(formatNumber(cost)).append(" токенов");
         executeWithRetry(new SendMessage(String.valueOf(user.tgId), startText.toString()));
 
@@ -583,7 +585,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
                 success = pollTaskAndSend(taskId, user.tgId, model);
             } catch (Exception e) {
-                safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
+                if (isMidjourney) {
+                    safeSend(user.tgId, midjourneyFailureMessage(e));
+                } else {
+                    safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
+                }
             } finally {
                 if (success) {
                     db.addSpent(user.tgId, cost);
@@ -631,6 +637,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
         return false;
+    }
+
+    private String midjourneyFailureMessage(Exception e) {
+        String msg = e == null || e.getMessage() == null ? "" : e.getMessage();
+        if (msg.contains("No response from MidJourney Official Website")
+                || msg.contains("\"code\":500")
+                || msg.contains("code\":500")
+                || msg.contains(" 500 ")) {
+            return "Midjourney сейчас временно недоступен. Попробуйте ещё раз позже.\nТокены возвращены.";
+        }
+        return "Ошибка при генерации Midjourney: " + msg + "\nТокены возвращены.";
     }
 
     private List<String> extractResultUrls(String resultJson) {
