@@ -116,7 +116,7 @@ public class KieClient {
         }
     }
 
-    public String createMidjourneyTask(String prompt, List<String> imageUrls, String aspectRatio, String taskType) throws IOException {
+    public String createFluxTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String resolution) throws IOException {
         StringBuilder images = new StringBuilder();
         if (imageUrls != null && !imageUrls.isEmpty()) {
             images.append("[");
@@ -130,23 +130,25 @@ public class KieClient {
         }
 
         List<String> fields = new java.util.ArrayList<>();
-        if (taskType != null && !taskType.isBlank()) {
-            fields.add("\"taskType\":\"" + escape(taskType) + "\"");
-        }
-        fields.add("\"speed\":\"fast\"");
         fields.add("\"prompt\":\"" + escape(prompt) + "\"");
         if (images.length() > 0) {
-            fields.add("\"fileUrls\":" + images);
+            fields.add("\"input_urls\":" + images);
         }
         if (aspectRatio != null && !aspectRatio.isBlank()) {
-            fields.add("\"aspectRatio\":\"" + escape(aspectRatio) + "\"");
+            fields.add("\"aspect_ratio\":\"" + escape(aspectRatio) + "\"");
+        }
+        if (resolution != null && !resolution.isBlank()) {
+            fields.add("\"resolution\":\"" + escape(resolution) + "\"");
         }
         String input = String.join(",", fields);
-        String payload = "{" + input + "}";
+        String payload = "{" +
+                "\"model\":\"" + escape(model) + "\"," +
+                "\"input\":{" + input + "}" +
+                "}";
 
         RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
         Request request = new Request.Builder()
-                .url(config.kieApiBase + "/api/v1/mj/generate")
+                .url(config.kieApiBase + "/api/v1/jobs/createTask")
                 .addHeader("Authorization", "Bearer " + config.kieApiKey)
                 .post(body)
                 .build();

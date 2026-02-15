@@ -53,7 +53,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_NANO_BANANA = "google/nano-banana";
     private static final String MODEL_NANO_BANANA_EDIT = "google/nano-banana-edit";
     private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
-    private static final String MODEL_MIDJOURNEY = "midjourney";
+    private static final String MODEL_FLUX_2_TEXT = "flux-2/pro-text-to-image";
+    private static final String MODEL_FLUX_2_IMAGE = "flux-2/pro-image-to-image";
 
     private final Config config;
     private final Database db;
@@ -225,9 +226,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
-        if ("model:midjourney".equals(data)) {
-            db.setCurrentModel(userId, MODEL_MIDJOURNEY);
-            user.currentModel = MODEL_MIDJOURNEY;
+        if ("model:flux".equals(data)) {
+            db.setCurrentModel(userId, MODEL_FLUX_2_TEXT);
+            user.currentModel = MODEL_FLUX_2_TEXT;
             db.clearPendingImages(userId);
             modelSelectedThisSession.add(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
@@ -246,10 +247,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("settings:resolution_menu".equals(data)) {
-            if (isMidjourneyModel(normalizeModel(user.currentModel))) {
-                executeWithRetry(new SendMessage(String.valueOf(chatId), "Для Midjourney качество не настраивается."));
-                return;
-            }
             editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
             return;
         }
@@ -265,34 +262,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if (data.startsWith("settings:res:")) {
-            if (isMidjourneyModel(normalizeModel(user.currentModel))) {
-                executeWithRetry(new SendMessage(String.valueOf(chatId), "Для Midjourney качество не настраивается."));
-                return;
-            }
             String res = data.substring("settings:res:".length());
             db.setResolution(userId, res);
             user.resolution = res;
             editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
-            return;
-        }
-        if ("settings:raw_toggle".equals(data)) {
-            if (!isMidjourneyModel(normalizeModel(user.currentModel))) {
-                return;
-            }
-            boolean next = !user.midjourneyRawEnabled;
-            db.setMidjourneyRawEnabled(userId, next);
-            user.midjourneyRawEnabled = next;
-            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
-            return;
-        }
-        if ("settings:translate_toggle".equals(data)) {
-            if (!isMidjourneyModel(normalizeModel(user.currentModel))) {
-                return;
-            }
-            boolean next = !user.midjourneyTranslateEnabled;
-            db.setMidjourneyTranslateEnabled(userId, next);
-            user.midjourneyTranslateEnabled = next;
-            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
         if (data.startsWith("settings:ratio:")) {
@@ -503,8 +476,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private void handlePrompt(Database.User user, String prompt) throws TelegramApiException {
         String normalizedModel = normalizeModel(user.currentModel);
-        boolean isMidjourney = isMidjourneyModel(normalizedModel);
-        if (!isNanoModel(normalizedModel) && !isMidjourney) {
+        boolean isFlux = isFluxModel(normalizedModel);
+        if (!isNanoModel(normalizedModel) && !isFlux) {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
@@ -524,23 +497,20 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
 
         List<String> fileIds = db.consumePendingImages(user.tgId);
-        if (isMidjourney && fileIds.size() > 5) {
-            executeWithRetry(new SendMessage(String.valueOf(user.tgId),
-                    "Для Midjourney можно загрузить не более 5 фотографий."));
-            activeGenerations.remove(user.tgId);
-            return;
+        if (isFlux && fileIds.size() > 8) {
+            fileIds = fileIds.subList(0, 8);
         }
-
+        List<String> pendingImages = List.copyOf(fileIds);
         db.addBalance(user.tgId, -cost);
 
         String modelLabel = modelLabel(normalizeModel(user.currentModel));
         String ratioLabel = aspectRatioLabel(user.aspectRatio);
         StringBuilder startText = new StringBuilder("✅ Запрос принят. Генерация началась\n\n");
         startText.append("🧠 Модель: ").append(modelLabel).append("\n");
-        if (isMidjourney) {
+        if (isFlux) {
+            String resolutionLabel = fluxResolutionLabel(user.resolution);
+            startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
             startText.append("📐 Формат: ").append(ratioLabel).append("\n");
-            startText.append("Автоперевод: ").append(user.midjourneyTranslateEnabled ? "включен" : "выключен").append("\n");
-            startText.append("RAW-MODE: ").append(user.midjourneyRawEnabled ? "включен" : "выключен").append("\n");
         } else {
             String resolutionLabel = resolutionLabel(user.resolution);
             String formatLabel = formatLabel(user.outputFormat);
@@ -556,7 +526,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             try {
                 List<String> imageUrls = new ArrayList<>();
                 int i = 1;
-                for (String fileId : fileIds) {
+                for (String fileId : pendingImages) {
                     String url = getTelegramFileUrl(fileId);
                     String uploaded = kieClient.uploadFileUrl(url, "tg_" + user.tgId + "_" + i);
                     if (uploaded != null && !uploaded.isBlank()) {
@@ -570,11 +540,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 String aspectRatio = mapAspectRatio(user.aspectRatio);
                 String model = normalizeModel(user.currentModel);
                 String taskId;
-                if (isMidjourneyModel(model)) {
-                    String preparedPrompt = prepareMidjourneyPrompt(user, prompt);
-                    String taskType = imageUrls.isEmpty() ? "mj_txt2img" : "mj_img2img";
-                    System.out.println("Kie request model=mj-api taskType=" + taskType + " ratio=" + aspectRatio + " images=" + imageUrls.size());
-                    taskId = kieClient.createMidjourneyTask(preparedPrompt, imageUrls, aspectRatio, taskType);
+                if (isFluxModel(model)) {
+                    String preparedPrompt = prepareFluxPrompt(prompt);
+                    String fluxModel = imageUrls.isEmpty() ? MODEL_FLUX_2_TEXT : MODEL_FLUX_2_IMAGE;
+                    String fluxResolution = fluxResolutionValue(user.resolution);
+                    String fluxAspectRatio = normalizeFluxAspectRatio(user.aspectRatio, !imageUrls.isEmpty());
+                    System.out.println("Kie request model=" + fluxModel + " res=" + fluxResolution + " ratio=" + fluxAspectRatio + " images=" + imageUrls.size());
+                    taskId = kieClient.createFluxTask(fluxModel, preparedPrompt, imageUrls, fluxAspectRatio, fluxResolution);
                 } else {
                     if (MODEL_NANO_BANANA.equals(model) && !imageUrls.isEmpty()) {
                         model = MODEL_NANO_BANANA_EDIT;
@@ -585,11 +557,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
                 success = pollTaskAndSend(taskId, user.tgId, model);
             } catch (Exception e) {
-                if (isMidjourney) {
-                    safeSend(user.tgId, midjourneyFailureMessage(e));
-                } else {
-                    safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
-                }
+                safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
             } finally {
                 if (success) {
                     db.addSpent(user.tgId, cost);
@@ -637,17 +605,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
         return false;
-    }
-
-    private String midjourneyFailureMessage(Exception e) {
-        String msg = e == null || e.getMessage() == null ? "" : e.getMessage();
-        if (msg.contains("No response from MidJourney Official Website")
-                || msg.contains("\"code\":500")
-                || msg.contains("code\":500")
-                || msg.contains(" 500 ")) {
-            return "Midjourney сейчас временно недоступен. Попробуйте ещё раз позже.\nТокены возвращены.";
-        }
-        return "Ошибка при генерации Midjourney: " + msg + "\nТокены возвращены.";
     }
 
     private List<String> extractResultUrls(String resultJson) {
@@ -744,7 +701,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "• <b>Gemini</b> — аналитика, сравнения, факты, структурирование сложных тем\n" +
                 "• <b>Grok</b> — дерзкий тон, трендовые форматы, короткие и цепкие формулировки\n\n" +
                 "📸 Фото\n" +
-                "• <b>Midjourney</b> — атмосферные сцены, стиль, арт, визуальные концепции\n" +
+                "• <b>Flux 2 Pro</b> — универсальная генерация с гибкими настройками\n" +
                 "• <b>DALL·E 3</b> — точное следование описанию, сложные композиции и детали\n" +
                 "• <b>NanoBanana</b> — быстрые правки: замена объектов, улучшение качества, вариации\n\n" +
                 "🎬 Видео\n" +
@@ -772,7 +729,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("🍌 Nano Banana", "model:nano")),
                 List.of(button("🍌 Nano Banana Pro", "model:nano-pro")),
-                List.of(button("🌌 Midjourney", "model:midjourney")),
+                List.of(button("🌀 Flux 2 Pro", "model:flux")),
                 List.of(button("⬅️ Назад", "menu:start"))
         ));
     }
@@ -785,34 +742,34 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private InlineKeyboardMarkup settingsMenuKeyboard(Database.User user) {
-        if (isMidjourneyModel(normalizeModel(user.currentModel))) {
-            return new InlineKeyboardMarkup(List.of(
-                    List.of(button("📐 Изменить формат", "settings:format_menu")),
-                    List.of(button(toggleLabel("RAW-MODE", user.midjourneyRawEnabled), "settings:raw_toggle")),
-                    List.of(button(toggleLabel("Автоперевод", user.midjourneyTranslateEnabled), "settings:translate_toggle")),
-                    List.of(button("⬅️ Назад", "settings:back_to_model"))
-            ));
-        }
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("📐 Изменить формат", "settings:format_menu")),
-                List.of(button("📏 Качество", "settings:resolution_menu")),
+                List.of(button("📏 Разрешение", "settings:resolution_menu")),
                 List.of(button("⬅️ Назад", "settings:back_to_model"))
         ));
     }
 
     private InlineKeyboardMarkup formatKeyboard(Database.User user) {
         String ratio = user.aspectRatio == null ? "auto" : user.aspectRatio;
+        if (isFluxModel(normalizeModel(user.currentModel))) {
+            return new InlineKeyboardMarkup(List.of(
+                    List.of(button(ratioButtonLabel("📐 1:1", "1:1", ratio), "settings:ratio:1:1"),
+                            button(ratioButtonLabel("📐 4:3", "4:3", ratio), "settings:ratio:4:3"),
+                            button(ratioButtonLabel("📐 3:4", "3:4", ratio), "settings:ratio:3:4")),
+                    List.of(button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
+                            button(ratioButtonLabel("📐 9:16", "9:16", ratio), "settings:ratio:9:16")),
+                    List.of(button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2"),
+                            button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3")),
+                    List.of(button(ratioButtonLabel("📐 auto", "auto", ratio), "settings:ratio:auto")),
+                    List.of(button("⬅️ Назад", "settings:back"))
+            ));
+        }
         return new InlineKeyboardMarkup(List.of(
                 List.of(button(ratioButtonLabel("📐 1:1", "1:1", ratio), "settings:ratio:1:1"),
                         button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3"),
                         button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2")),
                 List.of(button(ratioButtonLabel("📐 3:4", "3:4", ratio), "settings:ratio:3:4"),
-                        button(ratioButtonLabel("📐 4:3", "4:3", ratio), "settings:ratio:4:3"),
-                        button(ratioButtonLabel("📐 5:6", "5:6", ratio), "settings:ratio:5:6")),
-                List.of(button(ratioButtonLabel("📐 6:5", "6:5", ratio), "settings:ratio:6:5"),
-                        button(ratioButtonLabel("📐 1:2", "1:2", ratio), "settings:ratio:1:2"),
-                        button(ratioButtonLabel("📐 2:1", "2:1", ratio), "settings:ratio:2:1")),
-                List.of(button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
+                        button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
                         button(ratioButtonLabel("📐 9:16", "9:16", ratio), "settings:ratio:9:16")),
                 List.of(button(ratioButtonLabel("📐 auto", "auto", ratio), "settings:ratio:auto")),
                 List.of(button("⬅️ Назад", "settings:back"))
@@ -821,6 +778,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup resolutionKeyboard(Database.User user) {
         String resolution = user.resolution == null ? "2k" : user.resolution;
+        if (isFluxModel(normalizeModel(user.currentModel))) {
+            return new InlineKeyboardMarkup(List.of(
+                    List.of(button(resButtonLabel("📏 1K", "1k", resolution), "settings:res:1k"),
+                            button(resButtonLabel("📏 2K", "2k", resolution), "settings:res:2k")),
+                    List.of(button("⬅️ Назад", "settings:back"))
+            ));
+        }
         return new InlineKeyboardMarkup(List.of(
                 List.of(button(resButtonLabel("📏 1K", "1k", resolution), "settings:res:1k"),
                         button(resButtonLabel("📏 2K", "2k", resolution), "settings:res:2k"),
@@ -895,14 +859,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         long cost = costForUser(user);
         long queries = cost == 0 ? 0 : user.balance / cost;
         String normalized = normalizeModel(user.currentModel);
-        if (isMidjourneyModel(normalized)) {
-            return "🌆 Midjourney · создаёт безупречные изображения\n\n" +
-                    "– Пожалуйста, отправьте мне сообщение, в котором опишите желаемый сюжет фотографии или приложите фото с промптом для создания нового изображения.\n" +
-                    "– Для смешивания изображений загрузите от двух до пяти фотографий.\n\n" +
-                    "⚙️ Настройки · помогут улучшить качество\n" +
-                    "Формат фото: " + mapAspectRatio(user.aspectRatio) + "\n" +
-                    "Автоперевод: " + (user.midjourneyTranslateEnabled ? "включен" : "выключен") + "\n" +
-                    "RAW-MODE: " + (user.midjourneyRawEnabled ? "включен" : "выключен") + "\n\n" +
+        if (isFluxModel(normalized)) {
+            return "🌀 Flux 2 Pro · быстрые и чистые кадры\n\n" +
+                    "– Текст → изображение: опишите желаемую сцену.\n" +
+                    "– Референсы: можно добавить от 1 до 8 изображений, чтобы задать стиль или пересобрать сцену.\n\n" +
+                    "⚙️ Настройки\n" +
+                    "Разрешение: " + fluxResolutionLabel(user.resolution) + "\n" +
+                    "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                     "🔹 Баланса хватит на " + queries + " запросов.\n" +
                     "1 генерация = " + formatNumber(cost) + " токенов.";
         }
@@ -921,13 +884,15 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String settingsMenuText(Database.User user) {
-        if (isMidjourneyModel(normalizeModel(user.currentModel))) {
+        if (isFluxModel(normalizeModel(user.currentModel))) {
+            long cost1k = costForFluxResolution(user, "1k");
+            long cost2k = costForFluxResolution(user, "2k");
             return "⚙️ Настройки\n" +
-                    "Формат кадра: " + mapAspectRatio(user.aspectRatio) + "\n" +
-                    "Автоперевод: " + (user.midjourneyTranslateEnabled ? "включен" : "выключен") + "\n" +
-                    "RAW-MODE: " + (user.midjourneyRawEnabled ? "включен" : "выключен") + "\n\n" +
+                    "Разрешение: " + fluxResolutionLabel(user.resolution) + "\n" +
+                    "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                     "Стоимость генерации:\n" +
-                    "1 генерация = " + formatNumber(18_000) + " токенов";
+                    "1K = " + formatNumber(cost1k) + " токенов\n" +
+                    "2K = " + formatNumber(cost2k) + " токенов";
         }
         long costDefault = costForUserResolution(user, "2k");
         long cost4k = costForUserResolution(user, "4k");
@@ -942,26 +907,42 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String formatMenuText(Database.User user) {
-        String modelName = isMidjourneyModel(normalizeModel(user.currentModel)) ? "Midjourney" : "Nano Banana";
+        if (isFluxModel(normalizeModel(user.currentModel))) {
+            return "🖼️ Формат изображения\n" +
+                    "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
+                    "📐 Доступные форматы в Flux 2 Pro:\n" +
+                    "1:1: квадратный кадр\n\n" +
+                    "4:3: классический формат\n\n" +
+                    "3:4: вертикальный классический\n\n" +
+                    "16:9: широкий кадр\n\n" +
+                    "9:16: вертикальный видео-формат\n\n" +
+                    "3:2: фотоформат\n\n" +
+                    "2:3: вертикальный фотоформат\n\n" +
+                    "auto: автоматически подберет формат (если есть референс)";
+        }
         return "🖼️ Формат изображения\n" +
                 "Формат файла: автоматический\n" +
                 "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
-                "📐 Выберите формат создаваемого фото в " + modelName + "\n" +
+                "📐 Выберите формат создаваемого фото в Nano Banana\n" +
                 "1:1: идеально подходит для профильных фото в соцсетях, таких как VK, Telegram и т.д\n\n" +
-                "1:2: высокий вертикальный кадр для сторис и плакатов\n\n" +
                 "2:3: хорошо подходит для печатных фотографий, но также может использоваться для пинов на Pinterest\n\n" +
                 "3:2: широко используемый формат для фотографий, подходит для постов в Telegram, VK, и др.\n\n" +
                 "3:4: широко используемый формат для фотографий, карточек товаров и т.д.\n\n" +
-                "4:3: классический формат для фото и презентаций\n\n" +
-                "5:6: мягкий вертикальный формат для портретов\n\n" +
-                "6:5: чуть более широкий портретный формат\n\n" +
                 "16:9: стандартный формат для видео, идеален для YouTube, VK и др.\n\n" +
                 "9:16: оптимальный формат для Stories в Telegram или вертикальных видео на YouTube\n\n" +
-                "2:1: широкий панорамный кадр\n\n" +
                 "auto: автоматически подберет нужный формат";
     }
 
     private String resolutionMenuText(Database.User user) {
+        if (isFluxModel(normalizeModel(user.currentModel))) {
+            long cost1k = costForFluxResolution(user, "1k");
+            long cost2k = costForFluxResolution(user, "2k");
+            return "📏 Разрешение\n" +
+                    "Текущее: " + fluxResolutionLabel(user.resolution) + "\n\n" +
+                    "Стоимость генерации:\n" +
+                    "1K = " + formatNumber(cost1k) + " токенов\n" +
+                    "2K = " + formatNumber(cost2k) + " токенов";
+        }
         long costDefault = costForUserResolution(user, "2k");
         long cost4k = costForUserResolution(user, "4k");
         return "📏 Разрешение\n" +
@@ -1267,8 +1248,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private long costForUser(Database.User user) {
         String normalized = normalizeModel(user.currentModel);
-        if (isMidjourneyModel(normalized)) {
-            return 18_000;
+        if (isFluxModel(normalized)) {
+            return costForFluxResolution(user, user.resolution);
         }
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
         return costForUserResolution(user, res);
@@ -1338,8 +1319,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_NANO_BANANA_PRO.equals(model)) {
             return "Nano Banana Pro";
         }
-        if (isMidjourneyModel(model)) {
-            return "Midjourney";
+        if (isFluxModel(model)) {
+            return "Flux 2 Pro";
         }
         return model;
     }
@@ -1354,8 +1335,20 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("nano-banana-pro".equalsIgnoreCase(model)) {
             return MODEL_NANO_BANANA_PRO;
         }
-        if ("midjourney".equalsIgnoreCase(model)) {
-            return MODEL_MIDJOURNEY;
+        if (MODEL_FLUX_2_TEXT.equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_TEXT;
+        }
+        if (MODEL_FLUX_2_IMAGE.equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_IMAGE;
+        }
+        if ("flux-2/flex-text-to-image".equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_TEXT;
+        }
+        if ("flux-2/flex-image-to-image".equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_IMAGE;
+        }
+        if ("flux-2".equalsIgnoreCase(model) || "flux2".equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_TEXT;
         }
         return model;
     }
@@ -1366,69 +1359,54 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 || MODEL_NANO_BANANA_PRO.equals(model);
     }
 
-    private boolean isMidjourneyModel(String model) {
-        return MODEL_MIDJOURNEY.equals(model);
+    private boolean isFluxModel(String model) {
+        return MODEL_FLUX_2_TEXT.equalsIgnoreCase(model)
+                || MODEL_FLUX_2_IMAGE.equalsIgnoreCase(model)
+                || "flux-2/flex-text-to-image".equalsIgnoreCase(model)
+                || "flux-2/flex-image-to-image".equalsIgnoreCase(model);
     }
 
-    private String prepareMidjourneyPrompt(Database.User user, String prompt) {
-        String base = prompt == null ? "" : prompt.trim();
-        boolean rawMode = user == null || user.midjourneyRawEnabled;
-        boolean translate = user == null || user.midjourneyTranslateEnabled;
-        String translated = translate ? autoTranslateToEnglish(base) : base;
-        if (translated.isBlank()) {
-            return rawMode ? "--style raw" : translated;
-        }
-        String lower = translated.toLowerCase(Locale.ROOT);
-        if (lower.contains("--style raw") || !rawMode) {
-            return translated;
-        }
-        return translated + " --style raw";
+    private String prepareFluxPrompt(String prompt) {
+        return prompt == null ? "" : prompt.trim();
     }
 
-    private String autoTranslateToEnglish(String prompt) {
-        if (prompt == null || prompt.isBlank()) {
-            return "";
+    private String fluxResolutionLabel(String res) {
+        String normalized = res == null ? "" : res.trim().toLowerCase(Locale.ROOT);
+        if ("1k".equals(normalized)) {
+            return "1K";
         }
-        if (!containsCyrillic(prompt)) {
-            return prompt;
-        }
-        try {
-            String encoded = java.net.URLEncoder.encode(prompt, java.nio.charset.StandardCharsets.UTF_8);
-            String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=" + encoded;
-            okhttp3.Request request = new okhttp3.Request.Builder().url(url).get().build();
-            try (okhttp3.Response response = httpClient.newCall(request).execute()) {
-                if (!response.isSuccessful() || response.body() == null) {
-                    return prompt;
-                }
-                String body = response.body().string();
-                JsonNode root = mapper.readTree(body);
-                JsonNode sentences = root.get(0);
-                if (sentences == null || !sentences.isArray()) {
-                    return prompt;
-                }
-                StringBuilder sb = new StringBuilder();
-                for (JsonNode sentence : sentences) {
-                    JsonNode part = sentence.get(0);
-                    if (part != null) {
-                        sb.append(part.asText());
-                    }
-                }
-                String result = sb.toString().trim();
-                return result.isBlank() ? prompt : result;
-            }
-        } catch (Exception e) {
-            return prompt;
-        }
+        return "2K";
     }
 
-    private boolean containsCyrillic(String text) {
-        for (int i = 0; i < text.length(); i++) {
-            char ch = text.charAt(i);
-            if (ch >= '\u0400' && ch <= '\u04FF') {
-                return true;
-            }
+    private String fluxResolutionValue(String res) {
+        String normalized = res == null ? "" : res.trim().toLowerCase(Locale.ROOT);
+        if ("1k".equals(normalized)) {
+            return "1K";
         }
-        return false;
+        return "2K";
+    }
+
+    private long costForFluxResolution(Database.User user, String res) {
+        String normalized = res == null ? "" : res.trim().toLowerCase(Locale.ROOT);
+        if ("1k".equals(normalized)) {
+            return 12_000;
+        }
+        return 15_000;
+    }
+
+    private String normalizeFluxAspectRatio(String ratio, boolean hasImages) {
+        if (ratio == null || ratio.isBlank()) {
+            return hasImages ? "auto" : "1:1";
+        }
+        String normalized = ratio.toLowerCase(Locale.ROOT);
+        if ("auto".equals(normalized)) {
+            return hasImages ? "auto" : "1:1";
+        }
+        Set<String> allowed = Set.of("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3");
+        if (!allowed.contains(normalized)) {
+            return "1:1";
+        }
+        return normalized;
     }
 
     private String formatButtonLabel(String label, String value, String current) {
@@ -1452,10 +1430,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return label;
     }
 
-    private String toggleLabel(String label, boolean enabled) {
-        return label + ": " + (enabled ? "включен" : "выключен");
-    }
-
     private Long extractReferrer(String text) {
         if (text == null) {
             return null;
@@ -1476,8 +1450,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private int maxPendingImages(Database.User user) {
-        if (user != null && isMidjourneyModel(normalizeModel(user.currentModel))) {
-            return 5;
+        if (user != null && isFluxModel(normalizeModel(user.currentModel))) {
+            return 8;
         }
         return 10;
     }
