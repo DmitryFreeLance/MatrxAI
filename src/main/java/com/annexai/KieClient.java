@@ -194,7 +194,7 @@ public class KieClient {
             fields.add("\"image_size\":\"" + escape(imageSize) + "\"");
         }
         if (numImages != null) {
-            fields.add("\"num_images\":" + numImages);
+            fields.add("\"num_images\":\"" + numImages + "\"");
         }
         if (strength != null) {
             fields.add("\"strength\":" + strength);
