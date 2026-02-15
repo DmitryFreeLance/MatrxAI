@@ -55,6 +55,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
     private static final String MODEL_FLUX_2_TEXT = "flux-2/pro-text-to-image";
     private static final String MODEL_FLUX_2_IMAGE = "flux-2/pro-image-to-image";
+    private static final String MODEL_FLUX_2_FLEX_TEXT = "flux-2/flex-text-to-image";
+    private static final String MODEL_FLUX_2_FLEX_IMAGE = "flux-2/flex-image-to-image";
 
     private final Config config;
     private final Database db;
@@ -218,14 +220,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
-        if ("model:nano-pro".equals(data)) {
-            db.setCurrentModel(userId, MODEL_NANO_BANANA_PRO);
-            user.currentModel = MODEL_NANO_BANANA_PRO;
-            db.clearPendingImages(userId);
-            modelSelectedThisSession.add(userId);
-            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
-            return;
-        }
         if ("model:flux".equals(data)) {
             db.setCurrentModel(userId, MODEL_FLUX_2_TEXT);
             user.currentModel = MODEL_FLUX_2_TEXT;
@@ -273,6 +267,31 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.setAspectRatio(userId, ratio);
             user.aspectRatio = ratio;
             editMessage(chatId, messageId, formatMenuText(user), formatKeyboard(user));
+            return;
+        }
+        if ("settings:flux_flex_toggle".equals(data)) {
+            if (!isFluxModel(normalizeModel(user.currentModel))) {
+                return;
+            }
+            String next = isFluxFlexModel(normalizeModel(user.currentModel))
+                    ? MODEL_FLUX_2_TEXT
+                    : MODEL_FLUX_2_FLEX_TEXT;
+            db.setCurrentModel(userId, next);
+            user.currentModel = next;
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
+            return;
+        }
+        if ("settings:nano_pro_toggle".equals(data)) {
+            if (!isNanoModel(normalizeModel(user.currentModel))) {
+                return;
+            }
+            String next = MODEL_NANO_BANANA_PRO.equals(normalizeModel(user.currentModel))
+                    ? MODEL_NANO_BANANA
+                    : MODEL_NANO_BANANA_PRO;
+            db.setCurrentModel(userId, next);
+            user.currentModel = next;
+            db.clearPendingImages(userId);
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
         if ("settings:back".equals(data)) {
@@ -503,12 +522,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         List<String> pendingImages = List.copyOf(fileIds);
         db.addBalance(user.tgId, -cost);
 
-        String modelLabel = modelLabel(normalizeModel(user.currentModel));
+        String modelLabel = modelLabel(normalizedModel);
         String ratioLabel = aspectRatioLabel(user.aspectRatio);
         StringBuilder startText = new StringBuilder("✅ Запрос принят. Генерация началась\n\n");
         startText.append("🧠 Модель: ").append(modelLabel).append("\n");
         if (isFlux) {
+            boolean flex = isFluxFlexModel(normalizedModel);
             String resolutionLabel = fluxResolutionLabel(user.resolution);
+            startText.append("✨ FLEX: ").append(flex ? "включен" : "выключен").append("\n");
             startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
             startText.append("📐 Формат: ").append(ratioLabel).append("\n");
         } else {
@@ -542,7 +563,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 String taskId;
                 if (isFluxModel(model)) {
                     String preparedPrompt = prepareFluxPrompt(prompt);
-                    String fluxModel = imageUrls.isEmpty() ? MODEL_FLUX_2_TEXT : MODEL_FLUX_2_IMAGE;
+                    boolean flex = isFluxFlexModel(model);
+                    String fluxModel = imageUrls.isEmpty()
+                            ? (flex ? MODEL_FLUX_2_FLEX_TEXT : MODEL_FLUX_2_TEXT)
+                            : (flex ? MODEL_FLUX_2_FLEX_IMAGE : MODEL_FLUX_2_IMAGE);
                     String fluxResolution = fluxResolutionValue(user.resolution);
                     String fluxAspectRatio = normalizeFluxAspectRatio(user.aspectRatio, !imageUrls.isEmpty());
                     System.out.println("Kie request model=" + fluxModel + " res=" + fluxResolution + " ratio=" + fluxAspectRatio + " images=" + imageUrls.size());
@@ -728,7 +752,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private InlineKeyboardMarkup modelSelectKeyboard() {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("🍌 Nano Banana", "model:nano")),
-                List.of(button("🍌 Nano Banana Pro", "model:nano-pro")),
                 List.of(button("🌀 Flux 2 Pro", "model:flux")),
                 List.of(button("⬅️ Назад", "menu:start"))
         ));
@@ -742,6 +765,24 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private InlineKeyboardMarkup settingsMenuKeyboard(Database.User user) {
+        if (isNanoModel(normalizeModel(user.currentModel))) {
+            boolean isPro = MODEL_NANO_BANANA_PRO.equals(normalizeModel(user.currentModel));
+            return new InlineKeyboardMarkup(List.of(
+                    List.of(button("📐 Изменить формат", "settings:format_menu")),
+                    List.of(button("📏 Разрешение", "settings:resolution_menu")),
+                    List.of(button((isPro ? "✅ " : "❌ ") + "Pro режим", "settings:nano_pro_toggle")),
+                    List.of(button("⬅️ Назад", "settings:back_to_model"))
+            ));
+        }
+        if (isFluxModel(normalizeModel(user.currentModel))) {
+            boolean flex = isFluxFlexModel(normalizeModel(user.currentModel));
+            return new InlineKeyboardMarkup(List.of(
+                    List.of(button("📐 Изменить формат", "settings:format_menu")),
+                    List.of(button("📏 Разрешение", "settings:resolution_menu")),
+                    List.of(button((flex ? "✅ " : "❌ ") + "Ультрареалистичность (FLEX)", "settings:flux_flex_toggle")),
+                    List.of(button("⬅️ Назад", "settings:back_to_model"))
+            ));
+        }
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("📐 Изменить формат", "settings:format_menu")),
                 List.of(button("📏 Разрешение", "settings:resolution_menu")),
@@ -860,10 +901,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         long queries = cost == 0 ? 0 : user.balance / cost;
         String normalized = normalizeModel(user.currentModel);
         if (isFluxModel(normalized)) {
+            boolean flex = isFluxFlexModel(normalized);
             return "🌀 Flux 2 Pro · быстрые и чистые кадры\n\n" +
                     "– Текст → изображение: опишите желаемую сцену.\n" +
-                    "– Референсы: можно добавить от 1 до 8 изображений, чтобы задать стиль или пересобрать сцену.\n\n" +
+                    "– Референсы: можно добавить от 1 до 8 изображений, чтобы задать стиль или пересобрать сцену.\n" +
+                    "– Ультрареалистичность (FLEX): больше деталей и реализма, но выше стоимость.\n\n" +
                     "⚙️ Настройки\n" +
+                    "Ультрареалистичность (FLEX): " + (flex ? "включена" : "выключена") + "\n" +
                     "Разрешение: " + fluxResolutionLabel(user.resolution) + "\n" +
                     "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                     "🔹 Баланса хватит на " + queries + " запросов.\n" +
@@ -885,14 +929,30 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String settingsMenuText(Database.User user) {
         if (isFluxModel(normalizeModel(user.currentModel))) {
+            boolean flex = isFluxFlexModel(normalizeModel(user.currentModel));
             long cost1k = costForFluxResolution(user, "1k");
             long cost2k = costForFluxResolution(user, "2k");
             return "⚙️ Настройки\n" +
+                    "Ультрареалистичность (FLEX): " + (flex ? "включена" : "выключена") + "\n" +
                     "Разрешение: " + fluxResolutionLabel(user.resolution) + "\n" +
                     "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                     "Стоимость генерации:\n" +
                     "1K = " + formatNumber(cost1k) + " токенов\n" +
                     "2K = " + formatNumber(cost2k) + " токенов";
+        }
+        if (isNanoModel(normalizeModel(user.currentModel))) {
+            boolean isPro = MODEL_NANO_BANANA_PRO.equals(normalizeModel(user.currentModel));
+            long costDefault = costForUserResolution(user, "2k");
+            long cost4k = costForUserResolution(user, "4k");
+            return "⚙️ Настройки\n" +
+                    "Pro режим: " + (isPro ? "включен" : "выключен") + "\n" +
+                    "Формат файла: автоматический\n" +
+                    "Разрешение: " + resolutionLabel(user.resolution) + "\n" +
+                    "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
+                    "Стоимость генерации:\n" +
+                    "1K = " + formatNumber(costDefault) + " токенов\n" +
+                    "2K = " + formatNumber(costDefault) + " токенов\n" +
+                    "4K = " + formatNumber(cost4k) + " токенов";
         }
         long costDefault = costForUserResolution(user, "2k");
         long cost4k = costForUserResolution(user, "4k");
@@ -1319,6 +1379,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_NANO_BANANA_PRO.equals(model)) {
             return "Nano Banana Pro";
         }
+        if (MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model) || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model)) {
+            return "Flux 2 Pro (FLEX)";
+        }
         if (isFluxModel(model)) {
             return "Flux 2 Pro";
         }
@@ -1341,11 +1404,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_FLUX_2_IMAGE.equalsIgnoreCase(model)) {
             return MODEL_FLUX_2_IMAGE;
         }
-        if ("flux-2/flex-text-to-image".equalsIgnoreCase(model)) {
-            return MODEL_FLUX_2_TEXT;
+        if (MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_FLEX_TEXT;
         }
-        if ("flux-2/flex-image-to-image".equalsIgnoreCase(model)) {
-            return MODEL_FLUX_2_IMAGE;
+        if (MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model)) {
+            return MODEL_FLUX_2_FLEX_IMAGE;
         }
         if ("flux-2".equalsIgnoreCase(model) || "flux2".equalsIgnoreCase(model)) {
             return MODEL_FLUX_2_TEXT;
@@ -1362,8 +1425,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private boolean isFluxModel(String model) {
         return MODEL_FLUX_2_TEXT.equalsIgnoreCase(model)
                 || MODEL_FLUX_2_IMAGE.equalsIgnoreCase(model)
-                || "flux-2/flex-text-to-image".equalsIgnoreCase(model)
-                || "flux-2/flex-image-to-image".equalsIgnoreCase(model);
+                || MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model)
+                || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model);
+    }
+
+    private boolean isFluxFlexModel(String model) {
+        return MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model)
+                || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model);
     }
 
     private String prepareFluxPrompt(String prompt) {
@@ -1388,10 +1456,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private long costForFluxResolution(Database.User user, String res) {
         String normalized = res == null ? "" : res.trim().toLowerCase(Locale.ROOT);
+        boolean flex = isFluxFlexModel(normalizeModel(user.currentModel));
         if ("1k".equals(normalized)) {
-            return 12_000;
+            return flex ? 30_000 : 12_000;
         }
-        return 15_000;
+        return flex ? 40_000 : 15_000;
     }
 
     private String normalizeFluxAspectRatio(String ratio, boolean hasImages) {
