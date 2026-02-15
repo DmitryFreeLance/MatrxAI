@@ -57,6 +57,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_FLUX_2_IMAGE = "flux-2/pro-image-to-image";
     private static final String MODEL_FLUX_2_FLEX_TEXT = "flux-2/flex-text-to-image";
     private static final String MODEL_FLUX_2_FLEX_IMAGE = "flux-2/flex-image-to-image";
+    private static final String MODEL_IDEOGRAM_CHARACTER = "ideogram/character";
+    private static final String MODEL_IDEOGRAM_V3_REMIX = "ideogram/v3-remix";
+    private static final String MODEL_IDEOGRAM_V3_EDIT = "ideogram/v3-edit";
 
     private final Config config;
     private final Database db;
@@ -228,6 +231,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
             return;
         }
+        if ("model:ideogram".equals(data)) {
+            db.setCurrentModel(userId, MODEL_IDEOGRAM_CHARACTER);
+            user.currentModel = MODEL_IDEOGRAM_CHARACTER;
+            db.clearPendingImages(userId);
+            modelSelectedThisSession.add(userId);
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
+            return;
+        }
         if ("model:back".equals(data)) {
             sendStart(chatId, user);
             return;
@@ -242,6 +253,22 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         if ("settings:resolution_menu".equals(data)) {
             editMessage(chatId, messageId, resolutionMenuText(user), resolutionKeyboard(user));
+            return;
+        }
+        if ("settings:ideogram_model_menu".equals(data)) {
+            editMessage(chatId, messageId, ideogramModelMenuText(user), ideogramModelKeyboard(user));
+            return;
+        }
+        if ("settings:ideogram_speed_menu".equals(data)) {
+            editMessage(chatId, messageId, ideogramSpeedMenuText(user), ideogramSpeedKeyboard(user));
+            return;
+        }
+        if ("settings:ideogram_style_menu".equals(data)) {
+            editMessage(chatId, messageId, ideogramStyleMenuText(user), ideogramStyleKeyboard(user));
+            return;
+        }
+        if ("settings:ideogram_size_menu".equals(data)) {
+            editMessage(chatId, messageId, ideogramSizeMenuText(user), ideogramSizeKeyboard(user));
             return;
         }
         if (data.startsWith("settings:format:")) {
@@ -267,6 +294,49 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.setAspectRatio(userId, ratio);
             user.aspectRatio = ratio;
             editMessage(chatId, messageId, formatMenuText(user), formatKeyboard(user));
+            return;
+        }
+        if (data.startsWith("settings:ideogram_model:")) {
+            String model = data.substring("settings:ideogram_model:".length());
+            String next;
+            switch (model) {
+                case "character" -> next = MODEL_IDEOGRAM_CHARACTER;
+                case "edit" -> next = MODEL_IDEOGRAM_V3_EDIT;
+                case "remix" -> next = MODEL_IDEOGRAM_V3_REMIX;
+                default -> next = MODEL_IDEOGRAM_CHARACTER;
+            }
+            db.setCurrentModel(userId, next);
+            user.currentModel = next;
+            db.clearPendingImages(userId);
+            editMessage(chatId, messageId, ideogramModelMenuText(user), ideogramModelKeyboard(user));
+            return;
+        }
+        if (data.startsWith("settings:ideogram_speed:")) {
+            String speed = data.substring("settings:ideogram_speed:".length());
+            db.setIdeogramSpeed(userId, speed);
+            user.ideogramSpeed = speed;
+            editMessage(chatId, messageId, ideogramSpeedMenuText(user), ideogramSpeedKeyboard(user));
+            return;
+        }
+        if (data.startsWith("settings:ideogram_style:")) {
+            String style = data.substring("settings:ideogram_style:".length());
+            db.setIdeogramStyle(userId, style);
+            user.ideogramStyle = style;
+            editMessage(chatId, messageId, ideogramStyleMenuText(user), ideogramStyleKeyboard(user));
+            return;
+        }
+        if (data.startsWith("settings:ideogram_size:")) {
+            String size = data.substring("settings:ideogram_size:".length());
+            db.setIdeogramImageSize(userId, size);
+            user.ideogramImageSize = size;
+            editMessage(chatId, messageId, ideogramSizeMenuText(user), ideogramSizeKeyboard(user));
+            return;
+        }
+        if ("settings:ideogram_expand_toggle".equals(data)) {
+            boolean next = !user.ideogramExpandPrompt;
+            db.setIdeogramExpandPrompt(userId, next);
+            user.ideogramExpandPrompt = next;
+            editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
         if ("settings:flux_flex_toggle".equals(data)) {
@@ -496,7 +566,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private void handlePrompt(Database.User user, String prompt) throws TelegramApiException {
         String normalizedModel = normalizeModel(user.currentModel);
         boolean isFlux = isFluxModel(normalizedModel);
-        if (!isNanoModel(normalizedModel) && !isFlux) {
+        boolean isIdeogram = isIdeogramModel(normalizedModel);
+        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram) {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
@@ -514,10 +585,33 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             activeGenerations.remove(user.tgId);
             return;
         }
+        if (isIdeogram) {
+            int required = ideogramRequiredImages(normalizedModel);
+            int current = db.countPendingImages(user.tgId);
+            if (required > 0 && current < required) {
+                String hint = switch (normalizedModel) {
+                    case MODEL_IDEOGRAM_V3_EDIT -> "Для Edit нужно 2 изображения: исходник и маска (белым обозначьте область изменения).";
+                    case MODEL_IDEOGRAM_V3_REMIX -> "Для Remix нужно 1 изображение с исходной сценой.";
+                    default -> "Добавьте изображения и повторите запрос.";
+                };
+                executeWithRetry(new SendMessage(String.valueOf(user.tgId),
+                        "Недостаточно изображений для генерации.\n" +
+                                "Сейчас: " + current + "/" + required + "\n" +
+                                hint));
+                activeGenerations.remove(user.tgId);
+                return;
+            }
+        }
 
         List<String> fileIds = db.consumePendingImages(user.tgId);
         if (isFlux && fileIds.size() > 8) {
             fileIds = fileIds.subList(0, 8);
+        }
+        if (isIdeogram) {
+            int max = ideogramMaxImages(normalizedModel);
+            if (fileIds.size() > max) {
+                fileIds = fileIds.subList(0, max);
+            }
         }
         List<String> pendingImages = List.copyOf(fileIds);
         db.addBalance(user.tgId, -cost);
@@ -532,6 +626,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             startText.append("✨ FLEX: ").append(flex ? "включен" : "выключен").append("\n");
             startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
             startText.append("📐 Формат: ").append(ratioLabel).append("\n");
+        } else if (isIdeogram) {
+            boolean isEdit = isIdeogramEdit(normalizedModel);
+            startText.append("⚡ Скорость: ").append(ideogramSpeedLabel(user.ideogramSpeed)).append("\n");
+            if (!isEdit) {
+                startText.append("🎨 Стиль: ").append(ideogramStyleLabel(user.ideogramStyle)).append("\n");
+                startText.append("📐 Формат: ").append(ideogramSizeLabel(user.ideogramImageSize)).append("\n");
+            }
+            startText.append("✨ Magic Prompt: ").append(user.ideogramExpandPrompt ? "включен" : "выключен").append("\n");
         } else {
             String resolutionLabel = resolutionLabel(user.resolution);
             String formatLabel = formatLabel(user.outputFormat);
@@ -571,6 +673,34 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     String fluxAspectRatio = normalizeFluxAspectRatio(user.aspectRatio, !imageUrls.isEmpty());
                     System.out.println("Kie request model=" + fluxModel + " res=" + fluxResolution + " ratio=" + fluxAspectRatio + " images=" + imageUrls.size());
                     taskId = kieClient.createFluxTask(fluxModel, preparedPrompt, imageUrls, fluxAspectRatio, fluxResolution);
+                } else if (isIdeogramModel(model)) {
+                    String preparedPrompt = prepareIdeogramPrompt(prompt);
+                    String speed = ideogramSpeedValue(user.ideogramSpeed);
+                    String style = ideogramStyleValue(user.ideogramStyle);
+                    String size = ideogramSizeValue(user.ideogramImageSize);
+                    boolean expand = user.ideogramExpandPrompt;
+                    if (isIdeogramCharacter(model)) {
+                        List<String> refs = imageUrls.isEmpty()
+                                ? List.of()
+                                : imageUrls.subList(0, Math.min(3, imageUrls.size()));
+                        System.out.println("Kie request model=" + MODEL_IDEOGRAM_CHARACTER + " speed=" + speed + " style=" + style + " size=" + size + " refs=" + refs.size());
+                        taskId = kieClient.createIdeogramTask(MODEL_IDEOGRAM_CHARACTER, preparedPrompt, speed, style, expand, size, refs, null, null, 1, null);
+                    } else if (isIdeogramEdit(model)) {
+                        String imageUrl = imageUrls.size() > 0 ? imageUrls.get(0) : null;
+                        String maskUrl = imageUrls.size() > 1 ? imageUrls.get(1) : null;
+                        if (imageUrl == null || maskUrl == null) {
+                            throw new IllegalStateException("Для Edit нужны 2 изображения: исходник и маска.");
+                        }
+                        System.out.println("Kie request model=" + MODEL_IDEOGRAM_V3_EDIT + " speed=" + speed + " images=2");
+                        taskId = kieClient.createIdeogramTask(MODEL_IDEOGRAM_V3_EDIT, preparedPrompt, speed, null, expand, null, null, imageUrl, maskUrl, null, null);
+                    } else {
+                        String imageUrl = imageUrls.size() > 0 ? imageUrls.get(0) : null;
+                        if (imageUrl == null) {
+                            throw new IllegalStateException("Для Remix нужно 1 изображение.");
+                        }
+                        System.out.println("Kie request model=" + MODEL_IDEOGRAM_V3_REMIX + " speed=" + speed + " style=" + style + " size=" + size + " images=1");
+                        taskId = kieClient.createIdeogramTask(MODEL_IDEOGRAM_V3_REMIX, preparedPrompt, speed, style, expand, size, null, imageUrl, null, 1, null);
+                    }
                 } else {
                     if (MODEL_NANO_BANANA.equals(model) && !imageUrls.isEmpty()) {
                         model = MODEL_NANO_BANANA_EDIT;
@@ -643,6 +773,41 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 for (JsonNode n : arr) {
                     urls.add(n.asText());
                 }
+                if (!urls.isEmpty()) {
+                    return urls;
+                }
+            }
+            JsonNode imageUrls = node.path("image_urls");
+            if (imageUrls.isArray()) {
+                for (JsonNode n : imageUrls) {
+                    urls.add(n.asText());
+                }
+                if (!urls.isEmpty()) {
+                    return urls;
+                }
+            }
+            JsonNode images = node.path("images");
+            if (images.isArray()) {
+                for (JsonNode n : images) {
+                    if (n.isTextual()) {
+                        urls.add(n.asText());
+                    } else {
+                        String url = n.path("url").asText();
+                        if (url == null || url.isBlank()) {
+                            url = n.path("image_url").asText();
+                        }
+                        if (url != null && !url.isBlank()) {
+                            urls.add(url);
+                        }
+                    }
+                }
+                if (!urls.isEmpty()) {
+                    return urls;
+                }
+            }
+            String singleUrl = node.path("image_url").asText();
+            if (singleUrl != null && !singleUrl.isBlank()) {
+                urls.add(singleUrl);
             }
         } catch (Exception e) {
             return urls;
@@ -726,6 +891,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "• <b>Grok</b> — дерзкий тон, трендовые форматы, короткие и цепкие формулировки\n\n" +
                 "📸 Фото\n" +
                 "• <b>Flux 2 Pro</b> — универсальная генерация с гибкими настройками\n" +
+                "• <b>Ideogram V3</b> — сильная типографика, постеры и точная работа с текстом\n" +
                 "• <b>DALL·E 3</b> — точное следование описанию, сложные композиции и детали\n" +
                 "• <b>NanoBanana</b> — быстрые правки: замена объектов, улучшение качества, вариации\n\n" +
                 "🎬 Видео\n" +
@@ -753,6 +919,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("🍌 Nano Banana", "model:nano")),
                 List.of(button("🌀 Flux 2 Pro", "model:flux")),
+                List.of(button("🧩 Ideogram V3", "model:ideogram")),
                 List.of(button("⬅️ Назад", "menu:start"))
         ));
     }
@@ -782,6 +949,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     List.of(button((flex ? "✅ " : "❌ ") + "Ультрареалистичность (FLEX)", "settings:flux_flex_toggle")),
                     List.of(button("⬅️ Назад", "settings:back_to_model"))
             ));
+        }
+        if (isIdeogramModel(normalizeModel(user.currentModel))) {
+            boolean isEdit = isIdeogramEdit(normalizeModel(user.currentModel));
+            List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+            rows.add(List.of(button("🧩 Выбор модели", "settings:ideogram_model_menu")));
+            rows.add(List.of(button("⚡ Скорость", "settings:ideogram_speed_menu")));
+            if (!isEdit) {
+                rows.add(List.of(button("🎨 Стиль", "settings:ideogram_style_menu")));
+                rows.add(List.of(button("📐 Формат", "settings:ideogram_size_menu")));
+            }
+            rows.add(List.of(button((user.ideogramExpandPrompt ? "✅ " : "❌ ") + "Magic Prompt", "settings:ideogram_expand_toggle")));
+            rows.add(List.of(button("⬅️ Назад", "settings:back_to_model")));
+            return new InlineKeyboardMarkup(rows);
         }
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("📐 Изменить формат", "settings:format_menu")),
@@ -903,13 +1083,28 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isFluxModel(normalized)) {
             boolean flex = isFluxFlexModel(normalized);
             return "🌀 Flux 2 Pro · быстрые и чистые кадры\n\n" +
-                    "– Текст → изображение: опишите желаемую сцену.\n" +
+                    "– Текст → изображение, изображение → изображение: опишите желаемую сцену.\n" +
                     "– Референсы: можно добавить от 1 до 8 изображений, чтобы задать стиль или пересобрать сцену.\n" +
                     "– Ультрареалистичность (FLEX): больше деталей и реализма, но выше стоимость.\n\n" +
                     "⚙️ Настройки\n" +
                     "Ультрареалистичность (FLEX): " + (flex ? "включена" : "выключена") + "\n" +
                     "Разрешение: " + fluxResolutionLabel(user.resolution) + "\n" +
                     "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
+                    "🔹 Баланса хватит на " + queries + " запросов.\n" +
+                    "1 генерация = " + formatNumber(cost) + " токенов.";
+        }
+        if (isIdeogramModel(normalized)) {
+            boolean isEdit = isIdeogramEdit(normalized);
+            return "🧩 Ideogram V3 · сильная типографика и точная работа с текстом\n\n" +
+                    "🧩 Character — создаёт персонажей и сохраняет консистентность (референсы 1–3 фото).\n" +
+                    "🎨 Remix — стилизация и вариации по исходному изображению (1 фото).\n" +
+                    "✏️ Edit — точечные правки с маской (2 фото: оригинал + маска).\n\n" +
+                    "⚙️ Настройки\n" +
+                    "Модель: " + ideogramModelLabel(normalized) + "\n" +
+                    "Скорость: " + ideogramSpeedLabel(user.ideogramSpeed) + "\n" +
+                    "Стиль: " + (isEdit ? "—" : ideogramStyleLabel(user.ideogramStyle)) + "\n" +
+                    "Формат: " + (isEdit ? "—" : ideogramSizeLabel(user.ideogramImageSize)) + "\n" +
+                    "Magic Prompt: " + (user.ideogramExpandPrompt ? "включен" : "выключен") + "\n\n" +
                     "🔹 Баланса хватит на " + queries + " запросов.\n" +
                     "1 генерация = " + formatNumber(cost) + " токенов.";
         }
@@ -939,6 +1134,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     "Стоимость генерации:\n" +
                     "1K = " + formatNumber(cost1k) + " токенов\n" +
                     "2K = " + formatNumber(cost2k) + " токенов";
+        }
+        if (isIdeogramModel(normalizeModel(user.currentModel))) {
+            boolean isEdit = isIdeogramEdit(normalizeModel(user.currentModel));
+            long cost = costForUser(user);
+            return "⚙️ Настройки\n" +
+                    "Модель: " + ideogramModelLabel(normalizeModel(user.currentModel)) + "\n" +
+                    "Скорость: " + ideogramSpeedLabel(user.ideogramSpeed) + "\n" +
+                    "Стиль: " + (isEdit ? "—" : ideogramStyleLabel(user.ideogramStyle)) + "\n" +
+                    "Формат: " + (isEdit ? "—" : ideogramSizeLabel(user.ideogramImageSize)) + "\n" +
+                    "Magic Prompt: " + (user.ideogramExpandPrompt ? "включен" : "выключен") + "\n\n" +
+                    "Стоимость генерации:\n" +
+                    ideogramSpeedLabel(user.ideogramSpeed) + " = " + formatNumber(cost) + " токенов";
         }
         if (isNanoModel(normalizeModel(user.currentModel))) {
             boolean isPro = MODEL_NANO_BANANA_PRO.equals(normalizeModel(user.currentModel));
@@ -1011,6 +1218,97 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "1K = " + formatNumber(costDefault) + " токенов\n" +
                 "2K = " + formatNumber(costDefault) + " токенов\n" +
                 "4K = " + formatNumber(cost4k) + " токенов";
+    }
+
+    private String ideogramModelMenuText(Database.User user) {
+        String current = ideogramModelLabel(normalizeModel(user.currentModel));
+        return "🧩 Выбор модели Ideogram V3\n\n" +
+                "Character — персонажи, консистентность, референсы 1–3 фото.\n" +
+                "Remix — стилизация и вариации по исходному изображению.\n" +
+                "Edit — точечные правки по маске (2 фото: оригинал + маска).\n\n" +
+                "Текущая модель: " + current;
+    }
+
+    private InlineKeyboardMarkup ideogramModelKeyboard(Database.User user) {
+        String current = normalizeModel(user.currentModel);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(modelSelectLabel("🧩 Character", MODEL_IDEOGRAM_CHARACTER, current), "settings:ideogram_model:character")),
+                List.of(button(modelSelectLabel("🎨 Remix", MODEL_IDEOGRAM_V3_REMIX, current), "settings:ideogram_model:remix")),
+                List.of(button(modelSelectLabel("✏️ Edit", MODEL_IDEOGRAM_V3_EDIT, current), "settings:ideogram_model:edit")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private String ideogramSpeedMenuText(Database.User user) {
+        String speed = ideogramSpeedLabel(user.ideogramSpeed);
+        long turbo = costForIdeogram(user, "turbo");
+        long balanced = costForIdeogram(user, "balanced");
+        long quality = costForIdeogram(user, "quality");
+        return "⚡ Скорость генерации\n" +
+                "Текущая: " + speed + "\n\n" +
+                "Стоимость:\n" +
+                "Turbo = " + formatNumber(turbo) + " токенов\n" +
+                "Balanced = " + formatNumber(balanced) + " токенов\n" +
+                "Quality = " + formatNumber(quality) + " токенов";
+    }
+
+    private InlineKeyboardMarkup ideogramSpeedKeyboard(Database.User user) {
+        String current = ideogramSpeedKey(user.ideogramSpeed);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(optionLabel("⚡ Turbo", "turbo", current), "settings:ideogram_speed:turbo")),
+                List.of(button(optionLabel("⚡ Balanced", "balanced", current), "settings:ideogram_speed:balanced")),
+                List.of(button(optionLabel("⚡ Quality", "quality", current), "settings:ideogram_speed:quality")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private String ideogramStyleMenuText(Database.User user) {
+        if (isIdeogramEdit(normalizeModel(user.currentModel))) {
+            return "🎨 Стиль\n\n" +
+                    "Для режима Edit стиль не используется.\n" +
+                    "Переключитесь на Character или Remix.";
+        }
+        return "🎨 Стиль\n" +
+                "Текущий: " + ideogramStyleLabel(user.ideogramStyle) + "\n\n" +
+                "Auto — баланс деталей и реализма.\n" +
+                "General — универсальный стиль.\n" +
+                "Realistic — фотореализм.\n" +
+                "Design — постеры, графика, текст.";
+    }
+
+    private InlineKeyboardMarkup ideogramStyleKeyboard(Database.User user) {
+        String current = ideogramStyleKey(user.ideogramStyle);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(optionLabel("🎨 Auto", "auto", current), "settings:ideogram_style:auto")),
+                List.of(button(optionLabel("🎨 General", "general", current), "settings:ideogram_style:general")),
+                List.of(button(optionLabel("🎨 Realistic", "realistic", current), "settings:ideogram_style:realistic")),
+                List.of(button(optionLabel("🎨 Design", "design", current), "settings:ideogram_style:design")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private String ideogramSizeMenuText(Database.User user) {
+        if (isIdeogramEdit(normalizeModel(user.currentModel))) {
+            return "📐 Формат\n\n" +
+                    "Для режима Edit формат не используется.\n" +
+                    "Переключитесь на Character или Remix.";
+        }
+        return "📐 Формат\n" +
+                "Текущий: " + ideogramSizeLabel(user.ideogramImageSize) + "\n\n" +
+                "Выберите размер кадра для Ideogram V3.";
+    }
+
+    private InlineKeyboardMarkup ideogramSizeKeyboard(Database.User user) {
+        String current = ideogramSizeKey(user.ideogramImageSize);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(optionLabel("📐 Квадрат 1:1", "square", current), "settings:ideogram_size:square")),
+                List.of(button(optionLabel("📐 Квадрат HD", "square_hd", current), "settings:ideogram_size:square_hd")),
+                List.of(button(optionLabel("📐 Портрет 4:3", "portrait_4_3", current), "settings:ideogram_size:portrait_4_3")),
+                List.of(button(optionLabel("📐 Портрет 16:9", "portrait_16_9", current), "settings:ideogram_size:portrait_16_9")),
+                List.of(button(optionLabel("📐 Ландшафт 4:3", "landscape_4_3", current), "settings:ideogram_size:landscape_4_3")),
+                List.of(button(optionLabel("📐 Ландшафт 16:9", "landscape_16_9", current), "settings:ideogram_size:landscape_16_9")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
     }
 
     private String buyText() {
@@ -1311,6 +1609,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isFluxModel(normalized)) {
             return costForFluxResolution(user, user.resolution);
         }
+        if (isIdeogramModel(normalized)) {
+            return costForIdeogram(user, null);
+        }
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
         return costForUserResolution(user, res);
     }
@@ -1385,6 +1686,15 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isFluxModel(model)) {
             return "Flux 2 Pro";
         }
+        if (MODEL_IDEOGRAM_CHARACTER.equalsIgnoreCase(model)) {
+            return "Ideogram V3 (Character)";
+        }
+        if (MODEL_IDEOGRAM_V3_REMIX.equalsIgnoreCase(model)) {
+            return "Ideogram V3 (Remix)";
+        }
+        if (MODEL_IDEOGRAM_V3_EDIT.equalsIgnoreCase(model)) {
+            return "Ideogram V3 (Edit)";
+        }
         return model;
     }
 
@@ -1413,6 +1723,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("flux-2".equalsIgnoreCase(model) || "flux2".equalsIgnoreCase(model)) {
             return MODEL_FLUX_2_TEXT;
         }
+        if (MODEL_IDEOGRAM_CHARACTER.equalsIgnoreCase(model)) {
+            return MODEL_IDEOGRAM_CHARACTER;
+        }
+        if (MODEL_IDEOGRAM_V3_REMIX.equalsIgnoreCase(model)) {
+            return MODEL_IDEOGRAM_V3_REMIX;
+        }
+        if (MODEL_IDEOGRAM_V3_EDIT.equalsIgnoreCase(model)) {
+            return MODEL_IDEOGRAM_V3_EDIT;
+        }
+        if ("ideogram".equalsIgnoreCase(model) || "ideogram-v3".equalsIgnoreCase(model) || "ideogram/v3".equalsIgnoreCase(model)) {
+            return MODEL_IDEOGRAM_CHARACTER;
+        }
         return model;
     }
 
@@ -1429,12 +1751,34 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model);
     }
 
+    private boolean isIdeogramModel(String model) {
+        return MODEL_IDEOGRAM_CHARACTER.equalsIgnoreCase(model)
+                || MODEL_IDEOGRAM_V3_REMIX.equalsIgnoreCase(model)
+                || MODEL_IDEOGRAM_V3_EDIT.equalsIgnoreCase(model);
+    }
+
+    private boolean isIdeogramCharacter(String model) {
+        return MODEL_IDEOGRAM_CHARACTER.equalsIgnoreCase(model);
+    }
+
+    private boolean isIdeogramRemix(String model) {
+        return MODEL_IDEOGRAM_V3_REMIX.equalsIgnoreCase(model);
+    }
+
+    private boolean isIdeogramEdit(String model) {
+        return MODEL_IDEOGRAM_V3_EDIT.equalsIgnoreCase(model);
+    }
+
     private boolean isFluxFlexModel(String model) {
         return MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model)
                 || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model);
     }
 
     private String prepareFluxPrompt(String prompt) {
+        return prompt == null ? "" : prompt.trim();
+    }
+
+    private String prepareIdeogramPrompt(String prompt) {
         return prompt == null ? "" : prompt.trim();
     }
 
@@ -1461,6 +1805,124 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return flex ? 30_000 : 12_000;
         }
         return flex ? 40_000 : 15_000;
+    }
+
+    private long costForIdeogram(Database.User user, String speedOverride) {
+        String model = normalizeModel(user.currentModel);
+        String speed = speedOverride == null ? ideogramSpeedKey(user.ideogramSpeed) : ideogramSpeedKey(speedOverride);
+        boolean character = isIdeogramCharacter(model);
+        return switch (speed) {
+            case "turbo" -> character ? 25_000 : 10_000;
+            case "quality" -> character ? 40_000 : 20_000;
+            default -> character ? 35_000 : 15_000;
+        };
+    }
+
+    private String ideogramSpeedKey(String speed) {
+        if (speed == null) {
+            return "balanced";
+        }
+        String normalized = speed.trim().toLowerCase(Locale.ROOT);
+        if ("turbo".equals(normalized)) {
+            return "turbo";
+        }
+        if ("quality".equals(normalized)) {
+            return "quality";
+        }
+        return "balanced";
+    }
+
+    private String ideogramSpeedValue(String speed) {
+        return ideogramSpeedKey(speed).toUpperCase(Locale.ROOT);
+    }
+
+    private String ideogramSpeedLabel(String speed) {
+        return switch (ideogramSpeedKey(speed)) {
+            case "turbo" -> "Turbo";
+            case "quality" -> "Quality";
+            default -> "Balanced";
+        };
+    }
+
+    private String ideogramStyleKey(String style) {
+        if (style == null) {
+            return "auto";
+        }
+        String normalized = style.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "general", "realistic", "design" -> normalized;
+            default -> "auto";
+        };
+    }
+
+    private String ideogramStyleValue(String style) {
+        return ideogramStyleKey(style).toUpperCase(Locale.ROOT);
+    }
+
+    private String ideogramStyleLabel(String style) {
+        return switch (ideogramStyleKey(style)) {
+            case "general" -> "General";
+            case "realistic" -> "Realistic";
+            case "design" -> "Design";
+            default -> "Auto";
+        };
+    }
+
+    private String ideogramSizeKey(String size) {
+        if (size == null) {
+            return "square_hd";
+        }
+        String normalized = size.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "square", "square_hd", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9" -> normalized;
+            default -> "square_hd";
+        };
+    }
+
+    private String ideogramSizeValue(String size) {
+        return ideogramSizeKey(size);
+    }
+
+    private String ideogramSizeLabel(String size) {
+        return switch (ideogramSizeKey(size)) {
+            case "square" -> "Квадрат 1:1";
+            case "square_hd" -> "Квадрат HD";
+            case "portrait_4_3" -> "Портрет 4:3";
+            case "portrait_16_9" -> "Портрет 16:9";
+            case "landscape_4_3" -> "Ландшафт 4:3";
+            case "landscape_16_9" -> "Ландшафт 16:9";
+            default -> "Квадрат HD";
+        };
+    }
+
+    private String ideogramModelLabel(String model) {
+        if (isIdeogramEdit(model)) {
+            return "Edit";
+        }
+        if (isIdeogramRemix(model)) {
+            return "Remix";
+        }
+        return "Character";
+    }
+
+    private int ideogramRequiredImages(String model) {
+        if (isIdeogramEdit(model)) {
+            return 2;
+        }
+        if (isIdeogramRemix(model)) {
+            return 1;
+        }
+        return 0;
+    }
+
+    private int ideogramMaxImages(String model) {
+        if (isIdeogramEdit(model)) {
+            return 2;
+        }
+        if (isIdeogramRemix(model)) {
+            return 1;
+        }
+        return 3;
     }
 
     private String normalizeFluxAspectRatio(String ratio, boolean hasImages) {
@@ -1499,6 +1961,20 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return label;
     }
 
+    private String optionLabel(String label, String value, String current) {
+        if (value.equalsIgnoreCase(current)) {
+            return "✅ " + label;
+        }
+        return label;
+    }
+
+    private String modelSelectLabel(String label, String value, String current) {
+        if (value.equalsIgnoreCase(current)) {
+            return "✅ " + label;
+        }
+        return label;
+    }
+
     private Long extractReferrer(String text) {
         if (text == null) {
             return null;
@@ -1521,6 +1997,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private int maxPendingImages(Database.User user) {
         if (user != null && isFluxModel(normalizeModel(user.currentModel))) {
             return 8;
+        }
+        if (user != null && isIdeogramModel(normalizeModel(user.currentModel))) {
+            return ideogramMaxImages(normalizeModel(user.currentModel));
         }
         return 10;
     }

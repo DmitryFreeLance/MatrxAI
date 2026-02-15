@@ -168,6 +168,83 @@ public class KieClient {
         }
     }
 
+    public String createIdeogramTask(String model,
+                                     String prompt,
+                                     String renderingSpeed,
+                                     String style,
+                                     Boolean expandPrompt,
+                                     String imageSize,
+                                     List<String> referenceImageUrls,
+                                     String imageUrl,
+                                     String maskUrl,
+                                     Integer numImages,
+                                     Double strength) throws IOException {
+        List<String> fields = new java.util.ArrayList<>();
+        fields.add("\"prompt\":\"" + escape(prompt) + "\"");
+        if (renderingSpeed != null && !renderingSpeed.isBlank()) {
+            fields.add("\"rendering_speed\":\"" + escape(renderingSpeed) + "\"");
+        }
+        if (style != null && !style.isBlank()) {
+            fields.add("\"style\":\"" + escape(style) + "\"");
+        }
+        if (expandPrompt != null) {
+            fields.add("\"expand_prompt\":" + (expandPrompt ? "true" : "false"));
+        }
+        if (imageSize != null && !imageSize.isBlank()) {
+            fields.add("\"image_size\":\"" + escape(imageSize) + "\"");
+        }
+        if (numImages != null) {
+            fields.add("\"num_images\":" + numImages);
+        }
+        if (strength != null) {
+            fields.add("\"strength\":" + strength);
+        }
+        if (referenceImageUrls != null && !referenceImageUrls.isEmpty()) {
+            StringBuilder refs = new StringBuilder("[");
+            for (int i = 0; i < referenceImageUrls.size(); i++) {
+                if (i > 0) {
+                    refs.append(",");
+                }
+                refs.append("\"").append(escape(referenceImageUrls.get(i))).append("\"");
+            }
+            refs.append("]");
+            fields.add("\"reference_image_urls\":" + refs);
+        }
+        if (imageUrl != null && !imageUrl.isBlank()) {
+            fields.add("\"image_url\":\"" + escape(imageUrl) + "\"");
+        }
+        if (maskUrl != null && !maskUrl.isBlank()) {
+            fields.add("\"mask_url\":\"" + escape(maskUrl) + "\"");
+        }
+
+        String input = String.join(",", fields);
+        String payload = "{" +
+                "\"model\":\"" + escape(model) + "\"," +
+                "\"input\":{" + input + "}" +
+                "}";
+
+        RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
+        Request request = new Request.Builder()
+                .url(config.kieApiBase + "/api/v1/jobs/createTask")
+                .addHeader("Authorization", "Bearer " + config.kieApiKey)
+                .post(body)
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String err = response.body() != null ? response.body().string() : "";
+                throw new IOException("Kie createTask failed: " + response.code() + " " + err);
+            }
+            String respBody = response.body() != null ? response.body().string() : "{}";
+            JsonNode json = mapper.readTree(respBody);
+            String taskId = json.path("data").path("taskId").asText();
+            if (taskId == null || taskId.isBlank()) {
+                throw new IOException("Kie createTask returned empty taskId: " + respBody);
+            }
+            return taskId;
+        }
+    }
+
     public TaskInfo getTaskInfo(String taskId) throws IOException {
         HttpUrl url = HttpUrl.parse(config.kieApiBase + "/api/v1/jobs/recordInfo")
                 .newBuilder()
