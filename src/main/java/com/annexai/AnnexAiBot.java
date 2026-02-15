@@ -7,14 +7,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery;
 import org.telegram.telegrambots.meta.api.methods.GetFile;
-import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember;
 import org.telegram.telegrambots.meta.api.methods.send.SendInvoice;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.*;
-import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember;
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice;
 import org.telegram.telegrambots.meta.api.objects.payments.OrderInfo;
 import org.telegram.telegrambots.meta.api.objects.payments.PreCheckoutQuery;
@@ -55,7 +53,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_NANO_BANANA = "google/nano-banana";
     private static final String MODEL_NANO_BANANA_EDIT = "google/nano-banana-edit";
     private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
-    private static final long CHANNEL_ID = -1003828302009L;
 
     private final Config config;
     private final Database db;
@@ -138,9 +135,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
 
         if (message.hasPhoto()) {
-            if (!ensureSubscribed(message.getChatId(), userId)) {
-                return;
-            }
             boolean handled = saveIncomingPhotos(userId, message);
             if (message.getCaption() != null && !message.getCaption().isBlank()) {
                 handlePrompt(user, message.getCaption());
@@ -160,20 +154,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (message.hasText()) {
             String text = message.getText().trim();
             if (text.startsWith("/start")) {
-                if (ensureSubscribed(message.getChatId(), userId)) {
-                    modelSelectedThisSession.remove(userId);
-                    sendStart(message.getChatId(), user);
-                }
+                modelSelectedThisSession.remove(userId);
+                sendStart(message.getChatId(), user);
                 return;
             }
             if (text.startsWith("/admin")) {
-                if (ensureSubscribed(message.getChatId(), userId)) {
-                    sendAdminPanel(message.getChatId(), userId);
-                }
-                return;
-            }
-
-            if (!ensureSubscribed(message.getChatId(), userId)) {
+                sendAdminPanel(message.getChatId(), userId);
                 return;
             }
 
@@ -210,17 +196,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         Database.User user = db.getUser(userId);
         if (user == null) {
             user = db.getOrCreateUser(userId, query.getFrom().getUserName(), query.getFrom().getFirstName(), query.getFrom().getLastName(), null);
-        }
-
-        if ("sub:check".equals(data)) {
-            if (ensureSubscribed(chatId, userId)) {
-                sendStart(chatId, user);
-            }
-            return;
-        }
-
-        if (!ensureSubscribed(chatId, userId)) {
-            return;
         }
 
         if ("menu:start".equals(data)) {
@@ -554,7 +529,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     for (String url : urls) {
                         sendPhotoFromUrl(chatId, url);
                     }
-                    maybeSendNanoWarning(chatId, modelUsed);
                     return true;
                 }
                 if ("failed".equalsIgnoreCase(info.state)
@@ -662,10 +636,22 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private void sendStart(long chatId, Database.User user) throws TelegramApiException {
-        String text = "👋🏻 Привет! У тебя на балансе " + formatNumber(user.balance) + " токенов – используй их для запросов к нейросетям.\n\n" +
-                "🍌 Nano Banana Pro помогает генерировать и редактировать изображения: опиши сцену, меняй объекты и получай чистые детали в 2K.\n" +
-                "✨ Быстро, креативно и с точным наследованием исходного фото.\n\n" +
-                "❓ По всем вопросам писать – @maxsekret";
+        String text = "👋🏻 Привет! У тебя на балансе " + formatNumber(user.balance) + " токенов – используй их для запросов к нейросетям\n\n" +
+                "Добро пожаловать в мульти-лабораторию контента. Выбирай модель под задачу — так результат будет быстрее и точнее\n\n" +
+                "🧠 Текст\n" +
+                "• ChatGPT — универсальный помощник: идеи, сценарии, продающие тексты, диалоги\n" +
+                "• Gemini — аналитика, сравнения, факты, структурирование сложных тем\n" +
+                "• Grok — дерзкий тон, трендовые форматы, короткие и цепкие формулировки\n\n" +
+                "📸 Фото\n" +
+                "• Midjourney — атмосферные сцены, стиль, арт, визуальные концепции\n" +
+                "• DALL·E 3 — точное следование описанию, сложные композиции и детали\n" +
+                "• NanoBanana — быстрые правки: замена объектов, улучшение качества, вариации\n\n" +
+                "🎬 Видео\n" +
+                "• Veo 3 — кинематографичные ролики и красивые планы\n" +
+                "• Sora 2 — сюжетные клипы, движение камеры, сложные сцены\n" +
+                "• Kling 3.0 — динамика, эффектные переходы, короткие рекламные видео\n\n" +
+                "Подсказка: сначала выбери модель в меню, потом отправь промпт — и мы всё сделаем\n\n" +
+                "❓ По всем вопросам писать – @Dmitrii_54";
 
         SendMessage msg = new SendMessage(String.valueOf(chatId), text);
         msg.setReplyMarkup(startKeyboard());
@@ -988,28 +974,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
     }
 
-    private void maybeSendNanoWarning(long chatId, String modelUsed) {
-        if (MODEL_NANO_BANANA_PRO.equalsIgnoreCase(modelUsed)) {
-            return;
-        }
-        if (!MODEL_NANO_BANANA.equalsIgnoreCase(modelUsed) && !MODEL_NANO_BANANA_EDIT.equalsIgnoreCase(modelUsed)) {
-            return;
-        }
-        if (!db.markNanoWarnedIfNeeded(chatId)) {
-            return;
-        }
-        SendMessage msg = new SendMessage(String.valueOf(chatId),
-                "❗️ Обычная версия Nano Banana всегда работает с ошибками.\n" +
-                        "Рекомендуем использовать Pro режим для качественных фотографий.");
-        msg.setReplyMarkup(new InlineKeyboardMarkup(List.of(
-                List.of(button("💳 Купить токены", "menu:buy"))
-        )));
-        try {
-            executeWithRetry(msg);
-        } catch (Exception ignored) {
-        }
-    }
-
     private Path compressToTelegramPhoto(Path original) {
         try {
             BufferedImage source = ImageIO.read(original.toFile());
@@ -1318,37 +1282,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             sb.append(alphabet.charAt(random.nextInt(alphabet.length())));
         }
         return sb.toString();
-    }
-
-    private boolean ensureSubscribed(long chatId, long userId) throws TelegramApiException {
-        if (isSubscribed(userId)) {
-            return true;
-        }
-        SendMessage msg = new SendMessage(String.valueOf(chatId),
-                "🔔 Перед использованием бота необходимо подписаться на канал:\nhttps://t.me/botorbita\n\n" +
-                        "После подписки нажмите кнопку ниже.");
-        msg.setReplyMarkup(subscribeKeyboard());
-        executeWithRetry(msg);
-        return false;
-    }
-
-    private boolean isSubscribed(long userId) {
-        try {
-            GetChatMember get = new GetChatMember();
-            get.setChatId(String.valueOf(CHANNEL_ID));
-            get.setUserId(userId);
-            ChatMember member = execute(get);
-            String status = member.getStatus();
-            return !("left".equalsIgnoreCase(status) || "kicked".equalsIgnoreCase(status));
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private InlineKeyboardMarkup subscribeKeyboard() {
-        return new InlineKeyboardMarkup(List.of(
-                List.of(button("✅ Я подписался", "sub:check"))
-        ));
     }
 
     private static class PurchaseOption {
