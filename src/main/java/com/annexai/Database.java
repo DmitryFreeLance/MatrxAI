@@ -423,6 +423,21 @@ public class Database {
         return totals;
     }
 
+    public synchronized Map<String, Long> getModelUsageCounts() {
+        Map<String, Long> totals = new HashMap<>();
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT model, COUNT(*) as total FROM model_usage GROUP BY model")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    totals.put(rs.getString("model"), rs.getLong("total"));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to get model usage counts", e);
+        }
+        return totals;
+    }
+
     public synchronized void upsertSuccessfulPayment(long tgId,
                                                      String providerPaymentChargeId,
                                                      String telegramPaymentChargeId,
@@ -512,6 +527,26 @@ public class Database {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to create promo", e);
         }
+    }
+
+    public synchronized List<PromoCode> listActivePromoCodes(int limit) {
+        List<PromoCode> list = new ArrayList<>();
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT code, tokens, created_at FROM promo_codes WHERE is_used = 0 ORDER BY created_at DESC LIMIT ?")) {
+            ps.setInt(1, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    PromoCode p = new PromoCode();
+                    p.code = rs.getString("code");
+                    p.tokens = rs.getLong("tokens");
+                    p.createdAt = rs.getString("created_at");
+                    list.add(p);
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to list promo codes", e);
+        }
+        return list;
     }
 
     public synchronized PromoRedeemResult redeemPromo(long tgId, String code) {
@@ -816,5 +851,11 @@ public class Database {
         public String updatedAt;
         public String receiptEmail;
         public String description;
+    }
+
+    public static class PromoCode {
+        public String code;
+        public long tokens;
+        public String createdAt;
     }
 }

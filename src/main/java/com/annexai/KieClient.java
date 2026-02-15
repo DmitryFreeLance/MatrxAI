@@ -116,6 +116,58 @@ public class KieClient {
         }
     }
 
+    public String createMidjourneyTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String outputFormat) throws IOException {
+        StringBuilder images = new StringBuilder();
+        if (imageUrls != null && !imageUrls.isEmpty()) {
+            images.append("[");
+            for (int i = 0; i < imageUrls.size(); i++) {
+                if (i > 0) {
+                    images.append(",");
+                }
+                images.append("\"").append(escape(imageUrls.get(i))).append("\"");
+            }
+            images.append("]");
+        }
+
+        List<String> fields = new java.util.ArrayList<>();
+        fields.add("\"prompt\":\"" + escape(prompt) + "\"");
+        if (images.length() > 0) {
+            fields.add("\"image_urls\":" + images);
+        }
+        if (aspectRatio != null && !aspectRatio.isBlank()) {
+            fields.add("\"image_size\":\"" + escape(aspectRatio) + "\"");
+        }
+        if (outputFormat != null && !outputFormat.isBlank()) {
+            fields.add("\"output_format\":\"" + escape(outputFormat) + "\"");
+        }
+        String input = String.join(",", fields);
+        String payload = "{" +
+                "\"model\":\"" + escape(model) + "\"," +
+                "\"input\":{" + input + "}" +
+                "}";
+
+        RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
+        Request request = new Request.Builder()
+                .url(config.kieApiBase + "/api/v1/jobs/createTask")
+                .addHeader("Authorization", "Bearer " + config.kieApiKey)
+                .post(body)
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String err = response.body() != null ? response.body().string() : "";
+                throw new IOException("Kie createTask failed: " + response.code() + " " + err);
+            }
+            String respBody = response.body() != null ? response.body().string() : "{}";
+            JsonNode json = mapper.readTree(respBody);
+            String taskId = json.path("data").path("taskId").asText();
+            if (taskId == null || taskId.isBlank()) {
+                throw new IOException("Kie createTask returned empty taskId: " + respBody);
+            }
+            return taskId;
+        }
+    }
+
     public TaskInfo getTaskInfo(String taskId) throws IOException {
         HttpUrl url = HttpUrl.parse(config.kieApiBase + "/api/v1/jobs/recordInfo")
                 .newBuilder()
