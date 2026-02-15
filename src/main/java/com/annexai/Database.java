@@ -645,6 +645,10 @@ public class Database {
     }
 
     public synchronized void addPendingImage(long tgId, String fileId) {
+        addPendingImage(tgId, fileId, 10);
+    }
+
+    public synchronized void addPendingImage(long tgId, String fileId, int max) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO pending_images (user_id, file_id, created_at) VALUES (?, ?, ?)")) {
             ps.setLong(1, tgId);
@@ -654,7 +658,7 @@ public class Database {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to add pending image", e);
         }
-        trimPendingImages(tgId, 10);
+        trimPendingImages(tgId, max);
     }
 
     private void trimPendingImages(long tgId, int max) {

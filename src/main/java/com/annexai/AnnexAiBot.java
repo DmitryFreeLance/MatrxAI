@@ -54,7 +54,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_NANO_BANANA_EDIT = "google/nano-banana-edit";
     private static final String MODEL_NANO_BANANA_PRO = "nano-banana-pro";
     private static final String MODEL_MIDJOURNEY = "midjourney";
-    private static final String MODEL_MIDJOURNEY_FAST = "midjourney-fast";
 
     private final Config config;
     private final Database db;
@@ -137,13 +136,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
 
         if (message.hasPhoto()) {
-            boolean handled = saveIncomingPhotos(userId, message);
+            boolean handled = saveIncomingPhotos(user, message);
             if (message.getCaption() != null && !message.getCaption().isBlank()) {
                 handlePrompt(user, message.getCaption());
             } else {
                 if (!handled) {
                     int count = db.countPendingImages(userId);
-                    String replyText = "📷 Фото получено: " + count + "/10\n\n" +
+                    int maxPhotos = maxPendingImages(user);
+                    String replyText = "📷 Фото получено: " + count + "/" + maxPhotos + "\n\n" +
                             "❗️Отправляйте фото по одному, не альбомом.\n" +
                             "Можете добавить ещё фото или отправить текстовый промпт ✏️";
                     SendMessage reply = new SendMessage(String.valueOf(message.getChatId()), replyText);
@@ -475,7 +475,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         db.clearPendingAction(user.tgId);
         Database.PromoRedeemResult result = db.redeemPromo(user.tgId, code);
         switch (result) {
-            case SUCCESS -> execute(new SendMessage(String.valueOf(chatId), "Промокод активирован. 50 000 токенов начислены."));
+            case SUCCESS -> execute(new SendMessage(String.valueOf(chatId), "Промокод успешно активирован."));
             case ALREADY_USED -> execute(new SendMessage(String.valueOf(chatId), "Этот промокод уже использован."));
             case NOT_FOUND -> execute(new SendMessage(String.valueOf(chatId), "Промокод не найден."));
         }
@@ -570,9 +570,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 String taskId;
                 if (isMidjourneyModel(model)) {
                     String preparedPrompt = prepareMidjourneyPrompt(user, prompt);
-                    String taskModel = MODEL_MIDJOURNEY_FAST;
-                    System.out.println("Kie request model=" + taskModel + " ratio=" + aspectRatio + " images=" + imageUrls.size());
-                    taskId = kieClient.createMidjourneyTask(taskModel, preparedPrompt, imageUrls, aspectRatio, outputFormat);
+                    String taskType = imageUrls.isEmpty() ? "mj_txt2img" : "mj_img2img";
+                    System.out.println("Kie request model=mj-api taskType=" + taskType + " ratio=" + aspectRatio + " images=" + imageUrls.size());
+                    taskId = kieClient.createMidjourneyTask(preparedPrompt, imageUrls, aspectRatio, taskType);
                 } else {
                     if (MODEL_NANO_BANANA.equals(model) && !imageUrls.isEmpty()) {
                         model = MODEL_NANO_BANANA_EDIT;
@@ -790,7 +790,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         button(ratioButtonLabel("📐 2:3", "2:3", ratio), "settings:ratio:2:3"),
                         button(ratioButtonLabel("📐 3:2", "3:2", ratio), "settings:ratio:3:2")),
                 List.of(button(ratioButtonLabel("📐 3:4", "3:4", ratio), "settings:ratio:3:4"),
-                        button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
+                        button(ratioButtonLabel("📐 4:3", "4:3", ratio), "settings:ratio:4:3"),
+                        button(ratioButtonLabel("📐 5:6", "5:6", ratio), "settings:ratio:5:6")),
+                List.of(button(ratioButtonLabel("📐 6:5", "6:5", ratio), "settings:ratio:6:5"),
+                        button(ratioButtonLabel("📐 1:2", "1:2", ratio), "settings:ratio:1:2"),
+                        button(ratioButtonLabel("📐 2:1", "2:1", ratio), "settings:ratio:2:1")),
+                List.of(button(ratioButtonLabel("📐 16:9", "16:9", ratio), "settings:ratio:16:9"),
                         button(ratioButtonLabel("📐 9:16", "9:16", ratio), "settings:ratio:9:16")),
                 List.of(button(ratioButtonLabel("📐 auto", "auto", ratio), "settings:ratio:auto")),
                 List.of(button("⬅️ Назад", "settings:back"))
@@ -926,11 +931,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "Формат кадра: " + aspectRatioLabel(user.aspectRatio) + "\n\n" +
                 "📐 Выберите формат создаваемого фото в " + modelName + "\n" +
                 "1:1: идеально подходит для профильных фото в соцсетях, таких как VK, Telegram и т.д\n\n" +
+                "1:2: высокий вертикальный кадр для сторис и плакатов\n\n" +
                 "2:3: хорошо подходит для печатных фотографий, но также может использоваться для пинов на Pinterest\n\n" +
                 "3:2: широко используемый формат для фотографий, подходит для постов в Telegram, VK, и др.\n\n" +
                 "3:4: широко используемый формат для фотографий, карточек товаров и т.д.\n\n" +
+                "4:3: классический формат для фото и презентаций\n\n" +
+                "5:6: мягкий вертикальный формат для портретов\n\n" +
+                "6:5: чуть более широкий портретный формат\n\n" +
                 "16:9: стандартный формат для видео, идеален для YouTube, VK и др.\n\n" +
                 "9:16: оптимальный формат для Stories в Telegram или вертикальных видео на YouTube\n\n" +
+                "2:1: широкий панорамный кадр\n\n" +
                 "auto: автоматически подберет нужный формат";
     }
 
@@ -1209,10 +1219,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return "https://api.telegram.org/file/bot" + config.botToken + "/" + file.getFilePath();
     }
 
-    private boolean saveIncomingPhotos(long userId, Message message) {
+    private boolean saveIncomingPhotos(Database.User user, Message message) {
+        long userId = user.tgId;
         List<PhotoSize> photos = message.getPhoto();
         if (photos == null || photos.isEmpty()) {
             return false;
+        }
+        int maxPhotos = maxPendingImages(user);
+        int current = db.countPendingImages(userId);
+        if (current >= maxPhotos) {
+            safeSend(message.getChatId(),
+                    "Лимит фото достигнут: " + maxPhotos + ". Отправьте промпт, чтобы начать генерацию.");
+            return true;
         }
         PhotoSize best = photos.get(photos.size() - 1);
         String mediaGroupId = message.getMediaGroupId();
@@ -1226,7 +1244,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             }
             return true;
         }
-        db.addPendingImage(userId, best.getFileId());
+        db.addPendingImage(userId, best.getFileId(), maxPhotos);
         return false;
     }
 
@@ -1319,8 +1337,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("nano-banana-pro".equalsIgnoreCase(model)) {
             return MODEL_NANO_BANANA_PRO;
         }
-        if ("midjourney".equalsIgnoreCase(model)
-                || MODEL_MIDJOURNEY_FAST.equalsIgnoreCase(model)) {
+        if ("midjourney".equalsIgnoreCase(model)) {
             return MODEL_MIDJOURNEY;
         }
         return model;
@@ -1333,14 +1350,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private boolean isMidjourneyModel(String model) {
-        return MODEL_MIDJOURNEY.equals(model)
-                || MODEL_MIDJOURNEY_FAST.equalsIgnoreCase(model);
+        return MODEL_MIDJOURNEY.equals(model);
     }
 
     private String prepareMidjourneyPrompt(Database.User user, String prompt) {
         String base = prompt == null ? "" : prompt.trim();
-        boolean translate = user == null || user.midjourneyTranslateEnabled;
         boolean rawMode = user == null || user.midjourneyRawEnabled;
+        boolean translate = user == null || user.midjourneyTranslateEnabled;
         String translated = translate ? autoTranslateToEnglish(base) : base;
         if (translated.isBlank()) {
             return rawMode ? "--style raw" : translated;
@@ -1440,6 +1456,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private int maxPendingImages(Database.User user) {
+        if (user != null && isMidjourneyModel(normalizeModel(user.currentModel))) {
+            return 5;
+        }
+        return 10;
     }
 
     private long parsePromoAmount(String raw) {

@@ -116,7 +116,7 @@ public class KieClient {
         }
     }
 
-    public String createMidjourneyTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String outputFormat) throws IOException {
+    public String createMidjourneyTask(String prompt, List<String> imageUrls, String aspectRatio, String taskType) throws IOException {
         StringBuilder images = new StringBuilder();
         if (imageUrls != null && !imageUrls.isEmpty()) {
             images.append("[");
@@ -130,25 +130,23 @@ public class KieClient {
         }
 
         List<String> fields = new java.util.ArrayList<>();
+        if (taskType != null && !taskType.isBlank()) {
+            fields.add("\"taskType\":\"" + escape(taskType) + "\"");
+        }
+        fields.add("\"speed\":\"fast\"");
         fields.add("\"prompt\":\"" + escape(prompt) + "\"");
         if (images.length() > 0) {
-            fields.add("\"image_urls\":" + images);
+            fields.add("\"fileUrls\":" + images);
         }
         if (aspectRatio != null && !aspectRatio.isBlank()) {
-            fields.add("\"image_size\":\"" + escape(aspectRatio) + "\"");
-        }
-        if (outputFormat != null && !outputFormat.isBlank()) {
-            fields.add("\"output_format\":\"" + escape(outputFormat) + "\"");
+            fields.add("\"aspectRatio\":\"" + escape(aspectRatio) + "\"");
         }
         String input = String.join(",", fields);
-        String payload = "{" +
-                "\"model\":\"" + escape(model) + "\"," +
-                "\"input\":{" + input + "}" +
-                "}";
+        String payload = "{" + input + "}";
 
         RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
         Request request = new Request.Builder()
-                .url(config.kieApiBase + "/api/v1/jobs/createTask")
+                .url(config.kieApiBase + "/api/v1/mj/generate")
                 .addHeader("Authorization", "Bearer " + config.kieApiKey)
                 .post(body)
                 .build();
