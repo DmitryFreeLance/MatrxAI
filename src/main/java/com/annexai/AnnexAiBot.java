@@ -66,7 +66,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private final KieClient kieClient;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ObjectMapper mapper = new ObjectMapper();
-    private final OkHttpClient httpClient = new OkHttpClient();
+    private final OkHttpClient httpClient = new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build();
     private final Set<Long> activeGenerations = ConcurrentHashMap.newKeySet();
     private final Map<Long, String> lastAlbumNotice = new ConcurrentHashMap<>();
     private final Set<Long> modelSelectedThisSession = ConcurrentHashMap.newKeySet();
@@ -1411,6 +1416,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private void sendPhotoFromUrl(long chatId, String url) {
+        if (trySendPhotoByUrl(chatId, url)) {
+            return;
+        }
         Path tempFile = null;
         Path compressedFile = null;
         try {
@@ -1464,6 +1472,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 } catch (Exception ignored) {
                 }
             }
+        }
+    }
+
+    private boolean trySendPhotoByUrl(long chatId, String url) {
+        try {
+            SendPhoto photo = new SendPhoto();
+            photo.setChatId(String.valueOf(chatId));
+            photo.setPhoto(new InputFile(url));
+            executeWithRetry(photo);
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
