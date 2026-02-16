@@ -959,7 +959,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             List<List<InlineKeyboardButton>> rows = new ArrayList<>();
             rows.add(List.of(button("🧩 Выбор модели", "settings:ideogram_model_menu")));
             rows.add(List.of(button("⚡ Скорость", "settings:ideogram_speed_menu")));
-            if (!isEdit) {
+            if (isEdit) {
+                rows.add(List.of(button("📐 Формат (не используется в Edit)", "settings:ideogram_size_menu")));
+            } else {
                 rows.add(List.of(button("📐 Формат", "settings:ideogram_size_menu")));
             }
             rows.add(List.of(button((user.ideogramExpandPrompt ? "✅ " : "❌ ") + "Magic Prompt", "settings:ideogram_expand_toggle")));
