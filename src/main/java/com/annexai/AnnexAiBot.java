@@ -1450,14 +1450,15 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     SendPhoto photo = new SendPhoto();
                     photo.setChatId(String.valueOf(chatId));
                     photo.setPhoto(new InputFile(compressedFile.toFile()));
+                    photo.setCaption("<a href=\"" + url + "\">Скачать качественную версию</a>");
+                    photo.setParseMode("HTML");
                     executeWithRetry(photo);
                 } else {
-                    safeSend(chatId, "❗️Не удалось сжать фото. Отправляю только качественную версию файлом.");
+                    SendMessage msg = new SendMessage(String.valueOf(chatId),
+                            "❗️Не удалось сжать фото. <a href=\"" + url + "\">Скачать качественную версию</a>");
+                    msg.setParseMode("HTML");
+                    executeWithRetry(msg);
                 }
-                safeSend(chatId, "🗂️ Качественная версия (без сжатия) будет загружена файлом в течение 5 минут.");
-                Path originalFile = tempFile;
-                tempFile = null;
-                executor.submit(() -> sendDocumentAsync(chatId, originalFile));
             } else {
                 SendPhoto photo = new SendPhoto();
                 photo.setChatId(String.valueOf(chatId));
