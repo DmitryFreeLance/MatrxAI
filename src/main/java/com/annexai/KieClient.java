@@ -2,10 +2,13 @@ package com.annexai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import okhttp3.*;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 
 public class KieClient {
     private final Config config;
@@ -246,39 +249,45 @@ public class KieClient {
     }
 
     public String createGeminiTask(String model, String prompt, List<String> imageUrls, List<String> fileUrls) throws IOException {
-        List<String> fields = new java.util.ArrayList<>();
-        fields.add("\"prompt\":\"" + escape(prompt) + "\"");
+        StringBuilder content = new StringBuilder(prompt == null ? "" : prompt.trim());
         if (imageUrls != null && !imageUrls.isEmpty()) {
-            StringBuilder images = new StringBuilder("[");
-            for (int i = 0; i < imageUrls.size(); i++) {
-                if (i > 0) {
-                    images.append(",");
-                }
-                images.append("\"").append(escape(imageUrls.get(i))).append("\"");
+            if (content.length() > 0) {
+                content.append("\n\n");
             }
-            images.append("]");
-            fields.add("\"image_urls\":" + images);
+            content.append("Изображения:\n");
+            for (String url : imageUrls) {
+                content.append(url).append("\n");
+            }
         }
         if (fileUrls != null && !fileUrls.isEmpty()) {
-            StringBuilder files = new StringBuilder("[");
-            for (int i = 0; i < fileUrls.size(); i++) {
-                if (i > 0) {
-                    files.append(",");
-                }
-                files.append("\"").append(escape(fileUrls.get(i))).append("\"");
+            if (content.length() > 0) {
+                content.append("\n\n");
             }
-            files.append("]");
-            fields.add("\"file_urls\":" + files);
+            content.append("Файлы:\n");
+            for (String url : fileUrls) {
+                content.append(url).append("\n");
+            }
         }
-        String input = String.join(",", fields);
-        String payload = "{" +
-                "\"model\":\"" + escape(model) + "\"," +
-                "\"input\":{" + input + "}" +
-                "}";
+        List<ChatMessage> messages = List.of(new ChatMessage("user", content.toString().trim()));
+        return createGeminiCompletion(model, messages);
+    }
 
+    public String createGeminiCompletion(String model, List<ChatMessage> messages) throws IOException {
+        if (messages == null || messages.isEmpty()) {
+            throw new IllegalArgumentException("Gemini messages are empty.");
+        }
+        ObjectNode root = mapper.createObjectNode();
+        ArrayNode arr = root.putArray("messages");
+        for (ChatMessage msg : messages) {
+            ObjectNode m = arr.addObject();
+            m.put("role", msg.role == null ? "user" : msg.role);
+            m.put("content", msg.content == null ? "" : msg.content);
+        }
+
+        String payload = mapper.writeValueAsString(root);
         RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
         Request request = new Request.Builder()
-                .url(config.kieApiBase + "/api/v1/jobs/createTask")
+                .url(geminiEndpointForModel(model))
                 .addHeader("Authorization", "Bearer " + config.kieApiKey)
                 .post(body)
                 .build();
@@ -286,15 +295,38 @@ public class KieClient {
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
                 String err = response.body() != null ? response.body().string() : "";
-                throw new IOException("Kie createTask failed: " + response.code() + " " + err);
+                throw new IOException("Kie gemini completion failed: " + response.code() + " " + err);
             }
             String respBody = response.body() != null ? response.body().string() : "{}";
             JsonNode json = mapper.readTree(respBody);
-            String taskId = json.path("data").path("taskId").asText();
-            if (taskId == null || taskId.isBlank()) {
-                throw new IOException("Kie createTask returned empty taskId: " + respBody);
+            JsonNode choices = json.path("choices");
+            String content = "";
+            if (choices.isArray() && choices.size() > 0) {
+                JsonNode msg = choices.get(0).path("message");
+                content = msg.path("content").asText();
             }
-            return taskId;
+            if (content == null || content.isBlank()) {
+                throw new IOException("Kie gemini completion returned empty content: " + respBody);
+            }
+            return content;
+        }
+    }
+
+    private String geminiEndpointForModel(String model) {
+        String normalized = model == null ? "" : model.trim().toLowerCase(Locale.ROOT);
+        if (normalized.contains("pro")) {
+            return config.kieApiBase + "/gemini-3-pro/v1/chat/completions";
+        }
+        return config.kieApiBase + "/gemini-3-flash/v1/chat/completions";
+    }
+
+    public static class ChatMessage {
+        public final String role;
+        public final String content;
+
+        public ChatMessage(String role, String content) {
+            this.role = role;
+            this.content = content;
         }
     }
 

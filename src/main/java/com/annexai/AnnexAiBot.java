@@ -61,8 +61,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_IDEOGRAM_CHARACTER = "ideogram/character";
     private static final String MODEL_IDEOGRAM_V3_REMIX = "ideogram/v3-remix";
     private static final String MODEL_IDEOGRAM_V3_EDIT = "ideogram/v3-edit";
-    private static final String MODEL_GEMINI_3_FLASH = "google/gemini-3-flash";
-    private static final String MODEL_GEMINI_3_PRO = "google/gemini-3-pro-preview";
+    private static final String MODEL_GEMINI_3_FLASH = "gemini-3-flash";
+    private static final String MODEL_GEMINI_3_PRO = "gemini-3-pro";
     private static final int GEMINI_HISTORY_LIMIT = 12;
 
     private final Config config;
@@ -843,11 +843,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     List<Database.GeminiMessage> history = user.geminiHistoryEnabled
                             ? db.listGeminiMessages(user.tgId, GEMINI_HISTORY_LIMIT)
                             : List.of();
-                    String preparedPrompt = prepareGeminiPrompt(prompt, history, imageUrls);
-                    List<String> fileUrls = List.of();
-                    System.out.println("Kie request model=" + model + " history=" + history.size() + " images=" + imageUrls.size());
-                    taskId = kieClient.createGeminiTask(model, preparedPrompt, imageUrls, fileUrls);
-                    String responseText = pollTaskAndGetText(taskId, user.tgId);
+                    List<KieClient.ChatMessage> messages = buildGeminiMessages(history, prompt, imageUrls);
+                    System.out.println("Kie request gemini=" + model + " history=" + history.size() + " images=" + imageUrls.size());
+                    String responseText = kieClient.createGeminiCompletion(model, messages);
                     if (responseText == null || responseText.isBlank()) {
                         throw new IllegalStateException("Пустой ответ от модели.");
                     }
@@ -922,40 +920,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
         return false;
-    }
-
-    private String pollTaskAndGetText(String taskId, long chatId) {
-        int attempts = 200;
-        for (int i = 0; i < attempts; i++) {
-            try {
-                TimeUnit.SECONDS.sleep(3);
-                KieClient.TaskInfo info = kieClient.getTaskInfo(taskId);
-                if (i % 10 == 0) {
-                    System.out.println("Kie task " + taskId + " state=" + info.state);
-                }
-                if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state) || "completed".equalsIgnoreCase(info.state)) {
-                    String text = extractResultText(info.resultJson);
-                    if (text == null || text.isBlank()) {
-                        safeSend(chatId, "Готово, но без текста.\nТокены возвращены.");
-                        return null;
-                    }
-                    return text;
-                }
-                if ("failed".equalsIgnoreCase(info.state)
-                        || "fail".equalsIgnoreCase(info.state)
-                        || "error".equalsIgnoreCase(info.state)
-                        || "canceled".equalsIgnoreCase(info.state)
-                        || "cancelled".equalsIgnoreCase(info.state)) {
-                    safeSend(chatId, "Генерация не удалась: " + info.failReason + "\nТокены возвращены.");
-                    return null;
-                }
-            } catch (Exception e) {
-                safeSend(chatId, "Ошибка при проверке задачи: " + e.getMessage() + "\nТокены возвращены.");
-                return null;
-            }
-        }
-        safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
-        return null;
     }
 
     private List<String> extractResultUrls(String resultJson) {
@@ -2173,25 +2137,36 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return prompt == null ? "" : prompt.trim();
     }
 
-    private String prepareGeminiPrompt(String prompt, List<Database.GeminiMessage> history, List<String> imageUrls) {
-        String base = prompt == null ? "" : prompt.trim();
-        StringBuilder sb = new StringBuilder();
+    private List<KieClient.ChatMessage> buildGeminiMessages(List<Database.GeminiMessage> history,
+                                                            String prompt,
+                                                            List<String> imageUrls) {
+        List<KieClient.ChatMessage> messages = new ArrayList<>();
         if (history != null && !history.isEmpty()) {
-            sb.append("История диалога:\n");
-            for (Database.GeminiMessage msg : history) {
-                String role = "user".equalsIgnoreCase(msg.role) ? "Пользователь" : "Ассистент";
-                sb.append(role).append(": ").append(msg.content).append("\n");
+            List<Database.GeminiMessage> ordered = new ArrayList<>(history);
+            Collections.reverse(ordered);
+            for (Database.GeminiMessage msg : ordered) {
+                String role = "assistant";
+                if ("user".equalsIgnoreCase(msg.role)) {
+                    role = "user";
+                }
+                messages.add(new KieClient.ChatMessage(role, msg.content));
             }
-            sb.append("\nТекущий запрос:\n");
         }
-        sb.append(base);
+        String content = prompt == null ? "" : prompt.trim();
         if (imageUrls != null && !imageUrls.isEmpty()) {
-            sb.append("\n\nИзображения:\n");
+            if (!content.isBlank()) {
+                content += "\n\n";
+            }
+            content += "Изображения:\n";
             for (String url : imageUrls) {
-                sb.append(url).append("\n");
+                content += url + "\n";
             }
         }
-        return sb.toString().trim();
+        if (content.isBlank()) {
+            content = " ";
+        }
+        messages.add(new KieClient.ChatMessage("user", content.trim()));
+        return messages;
     }
 
     private String fluxResolutionLabel(String res) {
