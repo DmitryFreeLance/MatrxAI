@@ -11,6 +11,7 @@ import org.telegram.telegrambots.meta.api.methods.send.SendInvoice;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.*;
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice;
@@ -60,6 +61,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_IDEOGRAM_CHARACTER = "ideogram/character";
     private static final String MODEL_IDEOGRAM_V3_REMIX = "ideogram/v3-remix";
     private static final String MODEL_IDEOGRAM_V3_EDIT = "ideogram/v3-edit";
+    private static final String MODEL_GEMINI_3_FLASH = "google/gemini-3-flash";
+    private static final String MODEL_GEMINI_3_PRO = "google/gemini-3-pro-preview";
+    private static final int GEMINI_HISTORY_LIMIT = 12;
 
     private final Config config;
     private final Database db;
@@ -164,6 +168,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
 
+        if (isGeminiModel(normalizeModel(user.currentModel))) {
+            if (message.hasVoice()) {
+                handleGeminiVoice(user, message);
+                return;
+            }
+            if (message.hasDocument()) {
+                handleGeminiDocument(user, message);
+                return;
+            }
+        }
+
         if (message.hasText()) {
             String text = message.getText().trim();
             if (text.startsWith("/start")) {
@@ -173,6 +188,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             }
             if (text.startsWith("/admin")) {
                 sendAdminPanel(message.getChatId(), userId);
+                return;
+            }
+            if ("/clear".equalsIgnoreCase(text) && isGeminiModel(normalizeModel(user.currentModel))) {
+                db.clearGeminiMessages(userId);
+                execute(new SendMessage(String.valueOf(message.getChatId()), "историю диалога очищена"));
+                return;
+            }
+            if ("/end".equalsIgnoreCase(text) && isGeminiModel(normalizeModel(user.currentModel))) {
+                db.clearGeminiMessages(userId);
+                modelSelectedThisSession.remove(userId);
+                sendStart(message.getChatId(), user);
                 return;
             }
 
@@ -234,6 +260,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             db.clearPendingImages(userId);
             modelSelectedThisSession.add(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
+            return;
+        }
+        if ("model:gemini".equals(data)) {
+            if (!isGeminiModel(normalizeModel(user.currentModel))) {
+                db.setCurrentModel(userId, MODEL_GEMINI_3_PRO);
+                user.currentModel = MODEL_GEMINI_3_PRO;
+            }
+            db.clearPendingImages(userId);
+            modelSelectedThisSession.add(userId);
+            editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
             return;
         }
         if ("model:ideogram".equals(data)) {
@@ -345,6 +381,42 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, settingsMenuText(user), settingsMenuKeyboard(user));
             return;
         }
+        if ("gemini:history_toggle".equals(data)) {
+            boolean next = !user.geminiHistoryEnabled;
+            db.setGeminiHistoryEnabled(userId, next);
+            user.geminiHistoryEnabled = next;
+            editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
+            return;
+        }
+        if ("gemini:cost_toggle".equals(data)) {
+            boolean next = !user.geminiShowCostEnabled;
+            db.setGeminiShowCostEnabled(userId, next);
+            user.geminiShowCostEnabled = next;
+            editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
+            return;
+        }
+        if ("gemini:change_model".equals(data)) {
+            editMessage(chatId, messageId, geminiChangeModelText(user), geminiChangeModelKeyboard(user));
+            return;
+        }
+        if ("gemini:model:flash".equals(data)) {
+            db.setCurrentModel(userId, MODEL_GEMINI_3_FLASH);
+            user.currentModel = MODEL_GEMINI_3_FLASH;
+            editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
+            return;
+        }
+        if ("gemini:model:pro".equals(data)) {
+            db.setCurrentModel(userId, MODEL_GEMINI_3_PRO);
+            user.currentModel = MODEL_GEMINI_3_PRO;
+            editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
+            return;
+        }
+        if ("gemini:clear_history".equals(data)) {
+            db.clearGeminiMessages(userId);
+            execute(new SendMessage(String.valueOf(chatId), "историю диалога очищена"));
+            editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
+            return;
+        }
         if ("settings:flux_flex_toggle".equals(data)) {
             if (!isFluxModel(normalizeModel(user.currentModel))) {
                 return;
@@ -375,7 +447,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("settings:back_to_model".equals(data)) {
-            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
+            if (isGeminiModel(normalizeModel(user.currentModel))) {
+                editMessage(chatId, messageId, geminiDialogText(user), geminiDialogKeyboard(user));
+            } else {
+                editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard());
+            }
             return;
         }
         if ("menu:buy".equals(data)) {
@@ -528,7 +604,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         db.addBalance(userId, option.tokens);
 
         if (user.referrerId != null) {
-            long bonus = Math.round(option.tokens * 0.02);
+            long bonus = Math.round(option.tokens * 0.05);
             if (bonus > 0) {
                 db.addReferralEarned(user.referrerId, bonus);
                 safeSend(user.referrerId, "Вам начислен реферальный бонус: " + formatNumber(bonus) + " токенов.");
@@ -569,11 +645,58 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
     }
 
+    private void handleGeminiVoice(Database.User user, Message message) throws TelegramApiException {
+        if (!modelSelectedThisSession.contains(user.tgId)) {
+            executeWithRetry(new SendMessage(String.valueOf(message.getChatId()),
+                    "Сначала выберите модель через меню /start."));
+            return;
+        }
+        Voice voice = message.getVoice();
+        if (voice == null) {
+            return;
+        }
+        String url = getTelegramFileUrl(voice.getFileId());
+        String prompt = (message.getCaption() == null ? "" : message.getCaption().trim());
+        if (!prompt.isBlank()) {
+            prompt += "\n\n";
+        }
+        prompt += "Голосовое сообщение: " + url;
+        handlePrompt(user, prompt);
+    }
+
+    private void handleGeminiDocument(Database.User user, Message message) throws TelegramApiException {
+        if (!modelSelectedThisSession.contains(user.tgId)) {
+            executeWithRetry(new SendMessage(String.valueOf(message.getChatId()),
+                    "Сначала выберите модель через меню /start."));
+            return;
+        }
+        Document doc = message.getDocument();
+        if (doc == null) {
+            return;
+        }
+        String url = getTelegramFileUrl(doc.getFileId());
+        String prompt = (message.getCaption() == null ? "" : message.getCaption().trim());
+        String text = null;
+        if (isTextDocument(doc)) {
+            text = loadTextFromUrl(url, 8000);
+        }
+        if (!prompt.isBlank()) {
+            prompt += "\n\n";
+        }
+        if (text != null && !text.isBlank()) {
+            prompt += "Файл " + doc.getFileName() + ":\n" + text;
+        } else {
+            prompt += "Файл: " + (doc.getFileName() == null ? "без имени" : doc.getFileName()) + "\n" + url;
+        }
+        handlePrompt(user, prompt);
+    }
+
     private void handlePrompt(Database.User user, String prompt) throws TelegramApiException {
         String normalizedModel = normalizeModel(user.currentModel);
         boolean isFlux = isFluxModel(normalizedModel);
         boolean isIdeogram = isIdeogramModel(normalizedModel);
-        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram) {
+        boolean isGemini = isGeminiModel(normalizedModel);
+        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram && !isGemini) {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
@@ -585,9 +708,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         long cost = costForUser(user);
         if (user.balance < cost) {
             db.clearPendingImages(user.tgId);
-            executeWithRetry(new SendMessage(String.valueOf(user.tgId),
-                    "Недостаточно токенов. Пополните баланс в разделе «Купить токены».\n\n" +
-                            "📷 Загруженные фото сброшены — после пополнения отправьте их заново."));
+            SendMessage msg = new SendMessage(String.valueOf(user.tgId),
+                    "😔 У вас не хватает токенов на обработку этого запроса. <b>Купите дополнительные токены</b> в нашем магазине или <b>пригласите друзей</b> по своей реферальной ссылке. За каждого друга вы будете получать 5% токенов от их пополнений.");
+            msg.setParseMode("HTML");
+            msg.setReplyMarkup(insufficientTokensKeyboard());
+            executeWithRetry(msg);
             activeGenerations.remove(user.tgId);
             return;
         }
@@ -624,31 +749,39 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
         String modelLabel = modelLabel(normalizedModel);
         String ratioLabel = aspectRatioLabel(user.aspectRatio);
-        StringBuilder startText = new StringBuilder("✅ Запрос принят. Генерация началась\n\n");
-        startText.append("🧠 Модель: ").append(modelLabel).append("\n");
-        if (isFlux) {
-            boolean flex = isFluxFlexModel(normalizedModel);
-            String resolutionLabel = fluxResolutionLabel(user.resolution);
-            startText.append("✨ FLEX: ").append(flex ? "включен" : "выключен").append("\n");
-            startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
-            startText.append("📐 Формат: ").append(ratioLabel).append("\n");
-        } else if (isIdeogram) {
-            boolean isEdit = isIdeogramEdit(normalizedModel);
-            startText.append("⚡ Скорость: ").append(ideogramSpeedLabel(user.ideogramSpeed)).append("\n");
-            if (!isEdit) {
-                startText.append("📐 Формат: ").append(ideogramSizeLabel(user.ideogramImageSize)).append("\n");
-            }
-            startText.append("✨ Magic Prompt: ").append(user.ideogramExpandPrompt ? "включен" : "выключен").append("\n");
+        Integer progressMessageId = null;
+        if (isGemini) {
+            SendMessage progress = new SendMessage(String.valueOf(user.tgId), "Пишу ответ...");
+            Message sent = executeWithRetryMessage(progress);
+            progressMessageId = sent == null ? null : sent.getMessageId();
         } else {
-            String resolutionLabel = resolutionLabel(user.resolution);
-            String formatLabel = formatLabel(user.outputFormat);
-            startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
-            startText.append("📐 Формат: ").append(ratioLabel).append("\n");
-            startText.append("🖼️ Файл: ").append(formatLabel).append("\n");
+            StringBuilder startText = new StringBuilder("✅ Запрос принят. Генерация началась\n\n");
+            startText.append("🧠 Модель: ").append(modelLabel).append("\n");
+            if (isFlux) {
+                boolean flex = isFluxFlexModel(normalizedModel);
+                String resolutionLabel = fluxResolutionLabel(user.resolution);
+                startText.append("✨ FLEX: ").append(flex ? "включен" : "выключен").append("\n");
+                startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
+                startText.append("📐 Формат: ").append(ratioLabel).append("\n");
+            } else if (isIdeogram) {
+                boolean isEdit = isIdeogramEdit(normalizedModel);
+                startText.append("⚡ Скорость: ").append(ideogramSpeedLabel(user.ideogramSpeed)).append("\n");
+                if (!isEdit) {
+                    startText.append("📐 Формат: ").append(ideogramSizeLabel(user.ideogramImageSize)).append("\n");
+                }
+                startText.append("✨ Magic Prompt: ").append(user.ideogramExpandPrompt ? "включен" : "выключен").append("\n");
+            } else {
+                String resolutionLabel = resolutionLabel(user.resolution);
+                String formatLabel = formatLabel(user.outputFormat);
+                startText.append("📏 Разрешение: ").append(resolutionLabel).append("\n");
+                startText.append("📐 Формат: ").append(ratioLabel).append("\n");
+                startText.append("🖼️ Файл: ").append(formatLabel).append("\n");
+            }
+            startText.append("💰 Стоимость: ").append(formatNumber(cost)).append(" токенов");
+            executeWithRetry(new SendMessage(String.valueOf(user.tgId), startText.toString()));
         }
-        startText.append("💰 Стоимость: ").append(formatNumber(cost)).append(" токенов");
-        executeWithRetry(new SendMessage(String.valueOf(user.tgId), startText.toString()));
 
+        Integer finalProgressMessageId = progressMessageId;
         executor.submit(() -> {
             boolean success = false;
             try {
@@ -706,6 +839,30 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         System.out.println("Kie request model=" + MODEL_IDEOGRAM_V3_REMIX + " speed=" + speed + " style=" + style + " size=" + size + " images=1");
                         taskId = kieClient.createIdeogramTask(MODEL_IDEOGRAM_V3_REMIX, preparedPrompt, speed, style, expand, size, null, imageUrl, null, 1, null);
                     }
+                } else if (isGeminiModel(model)) {
+                    List<Database.GeminiMessage> history = user.geminiHistoryEnabled
+                            ? db.listGeminiMessages(user.tgId, GEMINI_HISTORY_LIMIT)
+                            : List.of();
+                    String preparedPrompt = prepareGeminiPrompt(prompt, history, imageUrls);
+                    List<String> fileUrls = List.of();
+                    System.out.println("Kie request model=" + model + " history=" + history.size() + " images=" + imageUrls.size());
+                    taskId = kieClient.createGeminiTask(model, preparedPrompt, imageUrls, fileUrls);
+                    String responseText = pollTaskAndGetText(taskId, user.tgId);
+                    if (responseText == null || responseText.isBlank()) {
+                        throw new IllegalStateException("Пустой ответ от модели.");
+                    }
+                    deleteMessageQuietly(user.tgId, finalProgressMessageId);
+                    String outputText = responseText;
+                    if (user.geminiShowCostEnabled) {
+                        outputText = outputText + "\n\n💰 Стоимость: " + formatNumber(cost) + " токенов";
+                    }
+                    executeWithRetry(new SendMessage(String.valueOf(user.tgId), outputText));
+                    if (user.geminiHistoryEnabled) {
+                        db.addGeminiMessage(user.tgId, "user", prompt);
+                        db.addGeminiMessage(user.tgId, "assistant", responseText);
+                    }
+                    success = true;
+                    return;
                 } else {
                     if (MODEL_NANO_BANANA.equals(model) && !imageUrls.isEmpty()) {
                         model = MODEL_NANO_BANANA_EDIT;
@@ -716,6 +873,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
                 success = pollTaskAndSend(taskId, user.tgId, model);
             } catch (Exception e) {
+                deleteMessageQuietly(user.tgId, finalProgressMessageId);
                 safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
             } finally {
                 if (success) {
@@ -764,6 +922,40 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
         return false;
+    }
+
+    private String pollTaskAndGetText(String taskId, long chatId) {
+        int attempts = 200;
+        for (int i = 0; i < attempts; i++) {
+            try {
+                TimeUnit.SECONDS.sleep(3);
+                KieClient.TaskInfo info = kieClient.getTaskInfo(taskId);
+                if (i % 10 == 0) {
+                    System.out.println("Kie task " + taskId + " state=" + info.state);
+                }
+                if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state) || "completed".equalsIgnoreCase(info.state)) {
+                    String text = extractResultText(info.resultJson);
+                    if (text == null || text.isBlank()) {
+                        safeSend(chatId, "Готово, но без текста.\nТокены возвращены.");
+                        return null;
+                    }
+                    return text;
+                }
+                if ("failed".equalsIgnoreCase(info.state)
+                        || "fail".equalsIgnoreCase(info.state)
+                        || "error".equalsIgnoreCase(info.state)
+                        || "canceled".equalsIgnoreCase(info.state)
+                        || "cancelled".equalsIgnoreCase(info.state)) {
+                    safeSend(chatId, "Генерация не удалась: " + info.failReason + "\nТокены возвращены.");
+                    return null;
+                }
+            } catch (Exception e) {
+                safeSend(chatId, "Ошибка при проверке задачи: " + e.getMessage() + "\nТокены возвращены.");
+                return null;
+            }
+        }
+        safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
+        return null;
     }
 
     private List<String> extractResultUrls(String resultJson) {
@@ -818,6 +1010,46 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return urls;
         }
         return urls;
+    }
+
+    private String extractResultText(String resultJson) {
+        if (resultJson == null || resultJson.isBlank()) {
+            return "";
+        }
+        try {
+            JsonNode node = mapper.readTree(resultJson);
+            JsonNode text = node.path("text");
+            if (text.isTextual()) {
+                return text.asText();
+            }
+            JsonNode content = node.path("content");
+            if (content.isTextual()) {
+                return content.asText();
+            }
+            JsonNode result = node.path("result");
+            if (result.isTextual()) {
+                return result.asText();
+            }
+            JsonNode resultText = result.path("text");
+            if (resultText.isTextual()) {
+                return resultText.asText();
+            }
+            JsonNode choices = node.path("choices");
+            if (choices.isArray() && choices.size() > 0) {
+                JsonNode first = choices.get(0);
+                JsonNode msg = first.path("message");
+                JsonNode msgContent = msg.path("content");
+                if (msgContent.isTextual()) {
+                    return msgContent.asText();
+                }
+                JsonNode choiceText = first.path("text");
+                if (choiceText.isTextual()) {
+                    return choiceText.asText();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
     }
 
     private void sendInvoice(long chatId, Database.User user, String optionKey, PurchaseOption option) throws TelegramApiException {
@@ -892,7 +1124,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         String text = "Добро пожаловать в мульти-лабораторию контента. Выбирай модель под задачу — так результат будет быстрее и точнее\n\n" +
                 "🧠 Текст\n" +
                 "• <b>ChatGPT</b> — универсальный помощник: идеи, сценарии, продающие тексты, диалоги\n" +
-                "• <b>Gemini</b> — аналитика, сравнения, факты, структурирование сложных тем\n" +
+                "• <b>Gemini 3</b> — аналитика, сравнения, факты, структурирование сложных тем\n" +
                 "• <b>Grok</b> — дерзкий тон, трендовые форматы, короткие и цепкие формулировки\n\n" +
                 "📸 Фото\n" +
                 "• <b>Flux 2</b> — универсальная генерация с гибкими настройками\n" +
@@ -921,6 +1153,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup modelSelectKeyboard() {
         return new InlineKeyboardMarkup(List.of(
+                List.of(button("💬 Gemini 3", "model:gemini")),
                 List.of(button("🍌 Nano Banana", "model:nano")),
                 List.of(button("🌀 Flux 2", "model:flux")),
                 List.of(button("🧩 Ideogram V3", "model:ideogram")),
@@ -932,6 +1165,27 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("⚙️ Настройки", "settings")),
                 List.of(button("🏠 Вернуться в меню", "menu:start"))
+        ));
+    }
+
+    private InlineKeyboardMarkup geminiDialogKeyboard(Database.User user) {
+        String historyLabel = (user.geminiHistoryEnabled ? "✅ " : "❌ ") + "История " + (user.geminiHistoryEnabled ? "включена" : "выключена");
+        String costLabel = (user.geminiShowCostEnabled ? "✅ " : "❌ ") + "Показ затрат " + (user.geminiShowCostEnabled ? "включен" : "выключен");
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(historyLabel, "gemini:history_toggle")),
+                List.of(button(costLabel, "gemini:cost_toggle")),
+                List.of(button("🔁 Изменить модель", "gemini:change_model")),
+                List.of(button("🧹 Очистить историю", "gemini:clear_history")),
+                List.of(button("⬅️ Назад к моделям", "menu:models"))
+        ));
+    }
+
+    private InlineKeyboardMarkup geminiChangeModelKeyboard(Database.User user) {
+        String current = normalizeModel(user.currentModel);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(modelSelectLabel("⚡ Gemini 3 Flash", MODEL_GEMINI_3_FLASH, current), "gemini:model:flash")),
+                List.of(button(modelSelectLabel("🌟 Gemini 3 Pro", MODEL_GEMINI_3_PRO, current), "gemini:model:pro")),
+                List.of(button("⬅️ Назад", "settings:back_to_model"))
         ));
     }
 
@@ -1021,12 +1275,20 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup buyKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("💎 50.000 токенов - 99р", "buy:pack:50k")),
+            List.of(button("💎 50.000 токенов - 99р", "buy:pack:50k")),
                 List.of(button("💎 200.000 токенов - 239р", "buy:pack:200k")),
                 List.of(button("💎 500.000 токенов - 529р", "buy:pack:500k")),
                 List.of(button("💎 1.000.000 токенов - 999р", "buy:pack:1m")),
                 List.of(button("🎟️ Активировать промокод", "promo:activate")),
                 List.of(button("⬅️ Назад", "buy:back"))
+        ));
+    }
+
+    private InlineKeyboardMarkup insufficientTokensKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button("💳 Купить токены", "menu:buy")),
+                List.of(button("🔗 Пригласить друга", "menu:invite")),
+                List.of(button("🏠 Вернуться в меню", "menu:start"))
         ));
     }
 
@@ -1125,6 +1387,30 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "⚙️ Настройки\n" +
                 "Формат фото: " + formatLabel(user.outputFormat) + "\n" +
                 "🔹 Баланса хватит на " + queries + " запросов. 1 генерация = " + formatNumber(cost) + " токенов";
+    }
+
+    private String geminiDialogText(Database.User user) {
+        String model = normalizeModel(user.currentModel);
+        String name = isGeminiPro(model) ? "🌟 Gemini 3 Pro" : "⚡ Gemini 3 Flash";
+        String historyLine = user.geminiHistoryEnabled ? "сохраняется (📈)" : "не сохраняется (🚫)";
+        return "💬 Диалог начался\n\n" +
+                "Для ввода используй:\n" +
+                "└ 📝 текст;\n" +
+                "└ 🎤 голосовое сообщение;\n" +
+                "└ 📸 фотографии (до 10 шт.);\n" +
+                "└ 📎 файл: любой текстовый формат (txt, .py и т.п).\n\n" +
+                "Название: " + name + "\n" +
+                "Модель: " + model + "\n" +
+                "История: " + historyLine + "\n\n" +
+                "/end — завершит этот диалог\n" +
+                "/clear — очистит историю в этом диалоге";
+    }
+
+    private String geminiChangeModelText(Database.User user) {
+        String model = normalizeModel(user.currentModel);
+        String name = isGeminiPro(model) ? "🌟 Gemini 3 Pro" : "⚡ Gemini 3 Flash";
+        return "Выберите модель Gemini 3:\n\n" +
+                "Текущая: " + name;
     }
 
     private String settingsMenuText(Database.User user) {
@@ -1362,7 +1648,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         String link = "https://t.me/" + config.botUsername + "?start=ref" + userId;
         return "🔹 Реферальная программа\n\n" +
                 "Приглашенному начисляется 50 000 токенов за переход по вашей ссылке.\n" +
-                "Вы получаете 2% токенами от каждой покупки приглашенного пользователя.\n\n" +
+                "Вы получаете 5% токенами от каждой покупки приглашенного пользователя.\n\n" +
                 "👥 Приглашено пользователей: " + count + "\n" +
                 "🔶 Получено: " + formatNumber(earned) + " токенов\n\n" +
                 "👤 Список приглашенных:\n" + invitees + "\n\n" +
@@ -1450,12 +1736,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     SendPhoto photo = new SendPhoto();
                     photo.setChatId(String.valueOf(chatId));
                     photo.setPhoto(new InputFile(compressedFile.toFile()));
-                    photo.setCaption("<a href=\"" + url + "\">Скачать качественную версию</a>");
+                    photo.setCaption("Вот <a href=\"" + url + "\">прямая ссылка</a> на качественную версию.");
                     photo.setParseMode("HTML");
                     executeWithRetry(photo);
                 } else {
                     SendMessage msg = new SendMessage(String.valueOf(chatId),
-                            "❗️Не удалось сжать фото. <a href=\"" + url + "\">Скачать качественную версию</a>");
+                            "❗️Не удалось сжать фото. Вот <a href=\"" + url + "\">прямая ссылка</a> на качественную версию.");
                     msg.setParseMode("HTML");
                     executeWithRetry(msg);
                 }
@@ -1509,6 +1795,54 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 Files.deleteIfExists(file);
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    private boolean isTextDocument(Document doc) {
+        String mime = doc.getMimeType();
+        if (mime != null && mime.startsWith("text")) {
+            return true;
+        }
+        String name = doc.getFileName();
+        if (name == null) {
+            return false;
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".txt")
+                || lower.endsWith(".md")
+                || lower.endsWith(".csv")
+                || lower.endsWith(".json")
+                || lower.endsWith(".xml")
+                || lower.endsWith(".yml")
+                || lower.endsWith(".yaml")
+                || lower.endsWith(".py")
+                || lower.endsWith(".js")
+                || lower.endsWith(".ts")
+                || lower.endsWith(".java")
+                || lower.endsWith(".kt")
+                || lower.endsWith(".go")
+                || lower.endsWith(".rs")
+                || lower.endsWith(".c")
+                || lower.endsWith(".cpp")
+                || lower.endsWith(".h");
+    }
+
+    private String loadTextFromUrl(String url, int maxChars) {
+        try {
+            Request request = new Request.Builder().url(url).build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) {
+                    return null;
+                }
+                byte[] bytes = response.body().bytes();
+                String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                if (text.length() > maxChars) {
+                    return text.substring(0, maxChars);
+                }
+                return text;
+            }
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -1631,6 +1965,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isIdeogramModel(normalized)) {
             return costForIdeogram(user, null);
         }
+        if (isGeminiModel(normalized)) {
+            int historyCount = user.geminiHistoryEnabled ? countGeminiHistoryPrompts(user.tgId) : 0;
+            return costForGemini(user, historyCount);
+        }
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
         return costForUserResolution(user, res);
     }
@@ -1714,6 +2052,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_IDEOGRAM_V3_EDIT.equalsIgnoreCase(model)) {
             return "Ideogram V3 (Edit)";
         }
+        if (MODEL_GEMINI_3_FLASH.equalsIgnoreCase(model)) {
+            return "Gemini 3 Flash";
+        }
+        if (MODEL_GEMINI_3_PRO.equalsIgnoreCase(model)) {
+            return "Gemini 3 Pro";
+        }
         return model;
     }
 
@@ -1754,6 +2098,21 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("ideogram".equalsIgnoreCase(model) || "ideogram-v3".equalsIgnoreCase(model) || "ideogram/v3".equalsIgnoreCase(model)) {
             return MODEL_IDEOGRAM_CHARACTER;
         }
+        if (MODEL_GEMINI_3_FLASH.equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_FLASH;
+        }
+        if (MODEL_GEMINI_3_PRO.equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_PRO;
+        }
+        if ("gemini-3-flash".equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_FLASH;
+        }
+        if ("gemini-3-pro".equalsIgnoreCase(model) || "gemini-3-pro-preview".equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_PRO;
+        }
+        if ("gemini".equalsIgnoreCase(model) || "gemini-3".equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_PRO;
+        }
         return model;
     }
 
@@ -1774,6 +2133,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return MODEL_IDEOGRAM_CHARACTER.equalsIgnoreCase(model)
                 || MODEL_IDEOGRAM_V3_REMIX.equalsIgnoreCase(model)
                 || MODEL_IDEOGRAM_V3_EDIT.equalsIgnoreCase(model);
+    }
+
+    private boolean isGeminiModel(String model) {
+        return MODEL_GEMINI_3_FLASH.equalsIgnoreCase(model)
+                || MODEL_GEMINI_3_PRO.equalsIgnoreCase(model);
+    }
+
+    private boolean isGeminiPro(String model) {
+        return MODEL_GEMINI_3_PRO.equalsIgnoreCase(model);
+    }
+
+    private boolean isGeminiFlash(String model) {
+        return MODEL_GEMINI_3_FLASH.equalsIgnoreCase(model);
     }
 
     private boolean isIdeogramCharacter(String model) {
@@ -1799,6 +2171,27 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String prepareIdeogramPrompt(String prompt) {
         return prompt == null ? "" : prompt.trim();
+    }
+
+    private String prepareGeminiPrompt(String prompt, List<Database.GeminiMessage> history, List<String> imageUrls) {
+        String base = prompt == null ? "" : prompt.trim();
+        StringBuilder sb = new StringBuilder();
+        if (history != null && !history.isEmpty()) {
+            sb.append("История диалога:\n");
+            for (Database.GeminiMessage msg : history) {
+                String role = "user".equalsIgnoreCase(msg.role) ? "Пользователь" : "Ассистент";
+                sb.append(role).append(": ").append(msg.content).append("\n");
+            }
+            sb.append("\nТекущий запрос:\n");
+        }
+        sb.append(base);
+        if (imageUrls != null && !imageUrls.isEmpty()) {
+            sb.append("\n\nИзображения:\n");
+            for (String url : imageUrls) {
+                sb.append(url).append("\n");
+            }
+        }
+        return sb.toString().trim();
     }
 
     private String fluxResolutionLabel(String res) {
@@ -1835,6 +2228,20 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             case "quality" -> character ? 40_000 : 20_000;
             default -> character ? 35_000 : 15_000;
         };
+    }
+
+    private long costForGemini(Database.User user, int historyPrompts) {
+        String model = normalizeModel(user.currentModel);
+        long base = isGeminiPro(model) ? 3_000 : 1_500;
+        long step = isGeminiPro(model) ? 600 : 300;
+        if (historyPrompts <= 0 || !user.geminiHistoryEnabled) {
+            return base;
+        }
+        return base + step * historyPrompts;
+    }
+
+    private int countGeminiHistoryPrompts(long userId) {
+        return db.countGeminiUserMessages(userId);
     }
 
     private String ideogramSpeedKey(String speed) {
@@ -2050,6 +2457,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         executeWithRetryInternal(() -> execute(edit), 3);
     }
 
+    private Message executeWithRetryMessage(SendMessage msg) throws TelegramApiException {
+        final Message[] result = {null};
+        executeWithRetryInternal(() -> result[0] = execute(msg), 3);
+        return result[0];
+    }
+
     private void executeWithRetryInternal(ThrowingAction action, int attempts) throws TelegramApiException {
         TelegramApiException last = null;
         for (int i = 0; i < attempts; i++) {
@@ -2070,6 +2483,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         if (last != null) {
             throw last;
+        }
+    }
+
+    private void deleteMessageQuietly(long chatId, Integer messageId) {
+        if (messageId == null) {
+            return;
+        }
+        try {
+            DeleteMessage del = new DeleteMessage(String.valueOf(chatId), messageId);
+            execute(del);
+        } catch (Exception ignored) {
         }
     }
 

@@ -3,11 +3,7 @@ package com.annexai;
 import java.io.File;
 import java.sql.*;
 import java.time.OffsetDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 public class Database {
@@ -49,7 +45,9 @@ public class Database {
                     ideogram_speed TEXT NOT NULL DEFAULT 'balanced',
                     ideogram_style TEXT NOT NULL DEFAULT 'auto',
                     ideogram_image_size TEXT NOT NULL DEFAULT 'square_hd',
-                    ideogram_expand_prompt INTEGER NOT NULL DEFAULT 1
+                    ideogram_expand_prompt INTEGER NOT NULL DEFAULT 1,
+                    gemini_history_enabled INTEGER NOT NULL DEFAULT 1,
+                    gemini_show_cost_enabled INTEGER NOT NULL DEFAULT 1
                 )
             """);
 
@@ -128,6 +126,14 @@ public class Database {
                 st.execute("ALTER TABLE users ADD COLUMN ideogram_expand_prompt INTEGER NOT NULL DEFAULT 1");
             } catch (SQLException ignored) {
             }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN gemini_history_enabled INTEGER NOT NULL DEFAULT 1");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN gemini_show_cost_enabled INTEGER NOT NULL DEFAULT 1");
+            } catch (SQLException ignored) {
+            }
 
             st.execute("""
                 CREATE TABLE IF NOT EXISTS promo_codes (
@@ -146,6 +152,16 @@ public class Database {
                     state TEXT NOT NULL,
                     data TEXT,
                     updated_at TEXT NOT NULL
+                )
+            """);
+
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS gemini_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
             """);
 
@@ -210,8 +226,8 @@ public class Database {
 
         String created = now();
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt) " +
-                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1, 'balanced', 'auto', 'square_hd', 1)")) {
+                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled) " +
+                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1, 'balanced', 'auto', 'square_hd', 1, 1, 1)")) {
             ps.setLong(1, tgId);
             ps.setString(2, username);
             ps.setString(3, firstName);
@@ -232,7 +248,7 @@ public class Database {
 
     public synchronized User getUser(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt FROM users WHERE tg_id = ?")) {
+                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled FROM users WHERE tg_id = ?")) {
             ps.setLong(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -261,6 +277,10 @@ public class Database {
                     u.ideogramStyle = rs.getString("ideogram_style");
                     u.ideogramImageSize = rs.getString("ideogram_image_size");
                     u.ideogramExpandPrompt = rs.getInt("ideogram_expand_prompt") == 1;
+                    int historyFlag = rs.getInt("gemini_history_enabled");
+                    u.geminiHistoryEnabled = rs.wasNull() || historyFlag == 1;
+                    int costFlag = rs.getInt("gemini_show_cost_enabled");
+                    u.geminiShowCostEnabled = rs.wasNull() || costFlag == 1;
                     return u;
                 }
             }
@@ -328,6 +348,14 @@ public class Database {
         updateUserField(tgId, "ideogram_expand_prompt", enabled ? "1" : "0");
     }
 
+    public synchronized void setGeminiHistoryEnabled(long tgId, boolean enabled) {
+        updateUserField(tgId, "gemini_history_enabled", enabled ? "1" : "0");
+    }
+
+    public synchronized void setGeminiShowCostEnabled(long tgId, boolean enabled) {
+        updateUserField(tgId, "gemini_show_cost_enabled", enabled ? "1" : "0");
+    }
+
     public synchronized boolean ensureWelcomeBonus(long tgId) {
         try (Connection conn = connect();
              PreparedStatement sel = conn.prepareStatement("SELECT welcome_bonus_given FROM users WHERE tg_id = ?")) {
@@ -369,6 +397,69 @@ public class Database {
             }
         }, "Failed to update nano warning flag");
         return rows[0] > 0;
+    }
+
+    public synchronized void addGeminiMessage(long userId, String role, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO gemini_messages (user_id, role, content, created_at) VALUES (?, ?, ?, ?)")) {
+            ps.setLong(1, userId);
+            ps.setString(2, role);
+            ps.setString(3, content);
+            ps.setString(4, now());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to add gemini message", e);
+        }
+    }
+
+    public synchronized List<GeminiMessage> listGeminiMessages(long userId, int limit) {
+        List<GeminiMessage> list = new ArrayList<>();
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT role, content, created_at FROM gemini_messages WHERE user_id = ? ORDER BY id DESC LIMIT ?")) {
+            ps.setLong(1, userId);
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    GeminiMessage msg = new GeminiMessage();
+                    msg.role = rs.getString("role");
+                    msg.content = rs.getString("content");
+                    msg.createdAt = rs.getString("created_at");
+                    list.add(msg);
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to list gemini messages", e);
+        }
+        Collections.reverse(list);
+        return list;
+    }
+
+    public synchronized void clearGeminiMessages(long userId) {
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM gemini_messages WHERE user_id = ?")) {
+            ps.setLong(1, userId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to clear gemini messages", e);
+        }
+    }
+
+    public synchronized int countGeminiUserMessages(long userId) {
+        try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT COUNT(*) as cnt FROM gemini_messages WHERE user_id = ? AND role = 'user'")) {
+            ps.setLong(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt("cnt");
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to count gemini messages", e);
+        }
+        return 0;
     }
 
     private void updateUserField(long tgId, String field, String value) {
@@ -900,6 +991,14 @@ public class Database {
         public String ideogramStyle;
         public String ideogramImageSize;
         public boolean ideogramExpandPrompt;
+        public boolean geminiHistoryEnabled;
+        public boolean geminiShowCostEnabled;
+    }
+
+    public static class GeminiMessage {
+        public String role;
+        public String content;
+        public String createdAt;
     }
 
     public static class PendingAction {
