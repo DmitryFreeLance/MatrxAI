@@ -2153,14 +2153,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         "Отвечай только на последнее сообщение пользователя; предыдущие сообщения используй лишь как контекст."));
         StringBuilder contentBuilder = new StringBuilder();
         if (history != null && !history.isEmpty()) {
-            List<Database.GeminiMessage> ordered = new ArrayList<>(history);
-            Collections.reverse(ordered);
+            List<Database.GeminiMessage> recentUsers = new ArrayList<>();
+            for (Database.GeminiMessage msg : history) {
+                if ("user".equalsIgnoreCase(msg.role)) {
+                    recentUsers.add(msg);
+                }
+                if (recentUsers.size() >= 2) {
+                    break;
+                }
+            }
+            Collections.reverse(recentUsers);
             StringBuilder context = new StringBuilder();
             int idx = 1;
-            for (Database.GeminiMessage msg : ordered) {
-                if (!"user".equalsIgnoreCase(msg.role)) {
-                    continue;
-                }
+            for (Database.GeminiMessage msg : recentUsers) {
                 if (context.length() == 0) {
                     context.append("Контекст, не отвечай на эти сообщения:\n");
                 }
