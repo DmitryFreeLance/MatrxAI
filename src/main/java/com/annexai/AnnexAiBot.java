@@ -2151,31 +2151,43 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды. " +
                         "Не используй символы '*' и '#', не применяй Markdown-разметку. " +
                         "Отвечай только на последнее сообщение пользователя; предыдущие сообщения используй лишь как контекст."));
+        StringBuilder contentBuilder = new StringBuilder();
         if (history != null && !history.isEmpty()) {
             List<Database.GeminiMessage> ordered = new ArrayList<>(history);
             Collections.reverse(ordered);
+            StringBuilder context = new StringBuilder();
+            int idx = 1;
             for (Database.GeminiMessage msg : ordered) {
-                String role = "assistant";
-                if ("user".equalsIgnoreCase(msg.role)) {
-                    role = "user";
+                if (!"user".equalsIgnoreCase(msg.role)) {
+                    continue;
                 }
-                messages.add(new KieClient.ChatMessage(role, msg.content));
+                if (context.length() == 0) {
+                    context.append("Контекст, не отвечай на эти сообщения:\n");
+                }
+                context.append(idx).append(". ").append(msg.content).append("\n");
+                idx++;
+            }
+            if (context.length() > 0) {
+                contentBuilder.append(context).append("\n");
             }
         }
+        contentBuilder.append("Текущий запрос:\n");
         String content = prompt == null ? "" : prompt.trim();
+        contentBuilder.append(content);
         if (imageUrls != null && !imageUrls.isEmpty()) {
-            if (!content.isBlank()) {
-                content += "\n\n";
+            if (contentBuilder.length() > 0) {
+                contentBuilder.append("\n\n");
             }
-            content += "Изображения:\n";
+            contentBuilder.append("Изображения:\n");
             for (String url : imageUrls) {
-                content += url + "\n";
+                contentBuilder.append(url).append("\n");
             }
         }
-        if (content.isBlank()) {
-            content = " ";
+        String contentFinal = contentBuilder.toString().trim();
+        if (contentFinal.isBlank()) {
+            contentFinal = " ";
         }
-        messages.add(new KieClient.ChatMessage("user", content));
+        messages.add(new KieClient.ChatMessage("user", contentFinal));
         return messages;
     }
 
