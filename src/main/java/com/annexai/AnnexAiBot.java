@@ -1364,7 +1364,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "└ 📸 фотографии (до 10 шт.);\n" +
                 "└ 📎 файл: любой текстовый формат (txt, .py и т.п).\n\n" +
                 "Название: " + name + "\n" +
-                "Модель: " + model + "\n" +
+                "Модель: " + geminiModelDisplay(model) + "\n" +
                 "История: " + historyLine + "\n\n" +
                 "/end — завершит этот диалог\n" +
                 "/clear — очистит историю в этом диалоге";
@@ -2068,10 +2068,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_GEMINI_3_PRO.equalsIgnoreCase(model)) {
             return MODEL_GEMINI_3_PRO;
         }
-        if ("gemini-3-flash".equalsIgnoreCase(model)) {
+        if ("gemini-3-flash".equalsIgnoreCase(model) || "gemini-3-flash-preview".equalsIgnoreCase(model)) {
             return MODEL_GEMINI_3_FLASH;
         }
         if ("gemini-3-pro".equalsIgnoreCase(model) || "gemini-3-pro-preview".equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_PRO;
+        }
+        if ("google/gemini-3-flash".equalsIgnoreCase(model)) {
+            return MODEL_GEMINI_3_FLASH;
+        }
+        if ("google/gemini-3-pro-preview".equalsIgnoreCase(model) || "google/gemini-3-pro".equalsIgnoreCase(model)) {
             return MODEL_GEMINI_3_PRO;
         }
         if ("gemini".equalsIgnoreCase(model) || "gemini-3".equalsIgnoreCase(model)) {
@@ -2110,6 +2116,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private boolean isGeminiFlash(String model) {
         return MODEL_GEMINI_3_FLASH.equalsIgnoreCase(model);
+    }
+
+    private String geminiModelDisplay(String model) {
+        return isGeminiPro(model) ? "google/gemini-3-pro" : "google/gemini-3-flash";
     }
 
     private boolean isIdeogramCharacter(String model) {
@@ -2165,7 +2175,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (content.isBlank()) {
             content = " ";
         }
-        messages.add(new KieClient.ChatMessage("user", content.trim()));
+        messages.add(new KieClient.ChatMessage("user", content));
         return messages;
     }
 
