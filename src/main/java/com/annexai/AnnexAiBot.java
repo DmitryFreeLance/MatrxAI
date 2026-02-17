@@ -854,7 +854,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     if (user.geminiShowCostEnabled) {
                         outputText = outputText + "\n\n💰 Стоимость: " + formatNumber(cost) + " токенов";
                     }
-                    executeWithRetry(new SendMessage(String.valueOf(user.tgId), outputText));
+                    sendLongMessage(user.tgId, outputText);
                     if (user.geminiHistoryEnabled) {
                         db.addGeminiMessage(user.tgId, "user", prompt);
                         db.addGeminiMessage(user.tgId, "assistant", responseText);
@@ -2358,6 +2358,28 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return "✅ " + label;
         }
         return label;
+    }
+
+    private void sendLongMessage(long chatId, String text) throws TelegramApiException {
+        if (text == null) {
+            return;
+        }
+        String remaining = text;
+        int max = 3900;
+        while (remaining.length() > max) {
+            int cut = remaining.lastIndexOf('\n', max);
+            if (cut < max * 0.5) {
+                cut = max;
+            }
+            String part = remaining.substring(0, cut).trim();
+            if (!part.isBlank()) {
+                executeWithRetry(new SendMessage(String.valueOf(chatId), part));
+            }
+            remaining = remaining.substring(Math.min(cut, remaining.length())).trim();
+        }
+        if (!remaining.isBlank()) {
+            executeWithRetry(new SendMessage(String.valueOf(chatId), remaining));
+        }
     }
 
     private String optionLabel(String label, String value, String current) {
