@@ -17,7 +17,13 @@ public class KieClient {
 
     public KieClient(Config config) {
         this.config = config;
-        this.httpClient = new OkHttpClient();
+        this.httpClient = new OkHttpClient.Builder()
+                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(180, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .callTimeout(200, java.util.concurrent.TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
     }
 
     public String uploadFileUrl(String fileUrl, String fileName) throws IOException {
@@ -277,6 +283,8 @@ public class KieClient {
             throw new IllegalArgumentException("Gemini messages are empty.");
         }
         ObjectNode root = mapper.createObjectNode();
+        root.put("model", model == null ? "" : model);
+        root.put("stream", false);
         ArrayNode arr = root.putArray("messages");
         for (ChatMessage msg : messages) {
             ObjectNode m = arr.addObject();
