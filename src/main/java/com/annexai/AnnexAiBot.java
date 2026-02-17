@@ -1364,7 +1364,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "└ 📸 фотографии (до 10 шт.);\n" +
                 "└ 📎 файл: любой текстовый формат (txt, .py и т.п).\n\n" +
                 "Название: " + name + "\n" +
-                "Модель: " + geminiModelDisplay(model) + "\n" +
                 "История: " + historyLine + "\n\n" +
                 "/end — завершит этот диалог\n" +
                 "/clear — очистит историю в этом диалоге";
@@ -2118,10 +2117,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return MODEL_GEMINI_3_FLASH.equalsIgnoreCase(model);
     }
 
-    private String geminiModelDisplay(String model) {
-        return isGeminiPro(model) ? "google/gemini-3-pro" : "google/gemini-3-flash";
-    }
-
     private boolean isIdeogramCharacter(String model) {
         return MODEL_IDEOGRAM_CHARACTER.equalsIgnoreCase(model);
     }
@@ -2151,6 +2146,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                                                             String prompt,
                                                             List<String> imageUrls) {
         List<KieClient.ChatMessage> messages = new ArrayList<>();
+        messages.add(new KieClient.ChatMessage("system",
+                "Ты — текстовая модель. Отвечай только текстом. " +
+                        "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды."));
         if (history != null && !history.isEmpty()) {
             List<Database.GeminiMessage> ordered = new ArrayList<>(history);
             Collections.reverse(ordered);
