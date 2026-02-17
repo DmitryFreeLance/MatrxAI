@@ -2148,7 +2148,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         List<KieClient.ChatMessage> messages = new ArrayList<>();
         messages.add(new KieClient.ChatMessage("system",
                 "Ты — текстовая модель. Отвечай только текстом. " +
-                        "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды."));
+                        "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды. " +
+                        "Не используй символы '*' и '#', не применяй Markdown-разметку."));
         if (history != null && !history.isEmpty()) {
             List<Database.GeminiMessage> ordered = new ArrayList<>(history);
             Collections.reverse(ordered);
