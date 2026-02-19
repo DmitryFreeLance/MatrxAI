@@ -274,7 +274,7 @@ public class KieClient {
                 content.append(url).append("\n");
             }
         }
-        List<ChatMessage> messages = List.of(new ChatMessage("user", content.toString().trim()));
+        List<ChatMessage> messages = List.of(new ChatMessage("user", content.toString().trim(), imageUrls));
         return createGeminiCompletion(model, messages);
     }
 
@@ -289,7 +289,24 @@ public class KieClient {
         for (ChatMessage msg : messages) {
             ObjectNode m = arr.addObject();
             m.put("role", msg.role == null ? "user" : msg.role);
-            m.put("content", msg.content == null ? "" : msg.content);
+            String content = msg.content == null ? "" : msg.content;
+            if (msg.imageUrls != null && !msg.imageUrls.isEmpty()) {
+                ArrayNode parts = m.putArray("content");
+                ObjectNode textPart = parts.addObject();
+                textPart.put("type", "text");
+                textPart.put("text", content);
+                for (String url : msg.imageUrls) {
+                    if (url == null || url.isBlank()) {
+                        continue;
+                    }
+                    ObjectNode imgPart = parts.addObject();
+                    imgPart.put("type", "image_url");
+                    ObjectNode img = imgPart.putObject("image_url");
+                    img.put("url", url);
+                }
+            } else {
+                m.put("content", content);
+            }
         }
 
         String payload = mapper.writeValueAsString(root);
@@ -331,10 +348,18 @@ public class KieClient {
     public static class ChatMessage {
         public final String role;
         public final String content;
+        public final List<String> imageUrls;
 
         public ChatMessage(String role, String content) {
             this.role = role;
             this.content = content;
+            this.imageUrls = List.of();
+        }
+
+        public ChatMessage(String role, String content, List<String> imageUrls) {
+            this.role = role;
+            this.content = content;
+            this.imageUrls = imageUrls == null ? List.of() : imageUrls;
         }
     }
 

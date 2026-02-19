@@ -872,7 +872,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 success = pollTaskAndSend(taskId, user.tgId, model);
             } catch (Exception e) {
                 deleteMessageQuietly(user.tgId, finalProgressMessageId);
-                safeSend(user.tgId, "Ошибка при генерации: " + e.getMessage() + "\nТокены возвращены.");
+                safeSend(user.tgId, "Ошибка при генерации: " + mapKieErrorMessage(e.getMessage()) + "\nТокены возвращены.");
             } finally {
                 if (success) {
                     db.addSpent(user.tgId, cost);
@@ -910,11 +910,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         || "error".equalsIgnoreCase(info.state)
                         || "canceled".equalsIgnoreCase(info.state)
                         || "cancelled".equalsIgnoreCase(info.state)) {
-                    safeSend(chatId, "Генерация не удалась: " + info.failReason + "\nТокены возвращены.");
+                    safeSend(chatId, "Генерация не удалась: " + mapKieErrorMessage(info.failReason) + "\nТокены возвращены.");
                     return false;
                 }
             } catch (Exception e) {
-                safeSend(chatId, "Ошибка при проверке задачи: " + e.getMessage() + "\nТокены возвращены.");
+                safeSend(chatId, "Ошибка при проверке задачи: " + mapKieErrorMessage(e.getMessage()) + "\nТокены возвращены.");
                 return false;
             }
         }
@@ -2179,20 +2179,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         contentBuilder.append("Текущий запрос:\n");
         String content = prompt == null ? "" : prompt.trim();
         contentBuilder.append(content);
-        if (imageUrls != null && !imageUrls.isEmpty()) {
-            if (contentBuilder.length() > 0) {
-                contentBuilder.append("\n\n");
-            }
-            contentBuilder.append("Изображения:\n");
-            for (String url : imageUrls) {
-                contentBuilder.append(url).append("\n");
-            }
-        }
         String contentFinal = contentBuilder.toString().trim();
         if (contentFinal.isBlank()) {
             contentFinal = " ";
         }
-        messages.add(new KieClient.ChatMessage("user", contentFinal));
+        List<String> images = imageUrls == null ? List.of() : imageUrls;
+        messages.add(new KieClient.ChatMessage("user", contentFinal, images));
         return messages;
     }
 
@@ -2455,6 +2447,23 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         } catch (NumberFormatException e) {
             return -1;
         }
+    }
+
+    private String mapKieErrorMessage(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "Неизвестная ошибка.";
+        }
+        String lower = raw.toLowerCase(Locale.ROOT);
+        if (lower.contains("server exception")) {
+            return "Ошибка сервера, попробуйте еще раз.";
+        }
+        if (lower.contains("cannot determine image type")) {
+            return "Не удалось распознать тип фото. Допустимые форматы: .jpg, .png, .webp, .gif.";
+        }
+        if (lower.contains("flagged as sensitive") || lower.contains("sensetive")) {
+            return "В вашем промпте присутствуют запрещенные слова. Попробуйте перефразировать запрос.";
+        }
+        return raw;
     }
 
     private boolean isAdmin(long userId) {
