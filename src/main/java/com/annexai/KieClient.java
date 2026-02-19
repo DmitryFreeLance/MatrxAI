@@ -283,7 +283,6 @@ public class KieClient {
             throw new IllegalArgumentException("Gemini messages are empty.");
         }
         ObjectNode root = mapper.createObjectNode();
-        root.put("model", model == null ? "" : model);
         root.put("stream", false);
         ArrayNode arr = root.putArray("messages");
         boolean multipart = false;

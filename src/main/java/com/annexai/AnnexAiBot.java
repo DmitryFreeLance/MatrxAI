@@ -2146,12 +2146,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                                                             String prompt,
                                                             List<String> imageUrls) {
         List<KieClient.ChatMessage> messages = new ArrayList<>();
-        messages.add(new KieClient.ChatMessage("system",
-                "Ты — текстовая модель. Отвечай только текстом. " +
-                        "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды. " +
-                        "Не используй символы '*' и '#', не применяй Markdown-разметку. " +
-                        "Отвечай только на последнее сообщение пользователя; предыдущие сообщения используй лишь как контекст."));
-        StringBuilder contentBuilder = new StringBuilder();
+        List<String> images = imageUrls == null ? List.of() : imageUrls;
+        boolean hasImages = !images.isEmpty();
+        String systemText = "Ты — текстовая модель. Отвечай только текстом. " +
+                "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды. " +
+                "Не используй символы '*' и '#', не применяй Markdown-разметку. " +
+                "Отвечай только на последнее сообщение пользователя; предыдущие сообщения используй лишь как контекст.";
+
+        StringBuilder context = new StringBuilder();
         if (history != null && !history.isEmpty()) {
             List<Database.GeminiMessage> recentUsers = new ArrayList<>();
             for (Database.GeminiMessage msg : history) {
@@ -2163,7 +2165,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 }
             }
             Collections.reverse(recentUsers);
-            StringBuilder context = new StringBuilder();
             int idx = 1;
             for (Database.GeminiMessage msg : recentUsers) {
                 if (context.length() == 0) {
@@ -2172,19 +2173,35 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 context.append(idx).append(". ").append(msg.content).append("\n");
                 idx++;
             }
-            if (context.length() > 0) {
-                contentBuilder.append(context).append("\n");
-            }
         }
-        contentBuilder.append("Текущий запрос:\n");
+
         String content = prompt == null ? "" : prompt.trim();
-        contentBuilder.append(content);
+        if (hasImages) {
+            StringBuilder text = new StringBuilder();
+            text.append(systemText).append("\n\n");
+            if (context.length() > 0) {
+                text.append(context).append("\n");
+            }
+            text.append("Текущий запрос:\n").append(content);
+            String finalText = text.toString().trim();
+            if (finalText.isBlank()) {
+                finalText = " ";
+            }
+            messages.add(new KieClient.ChatMessage("user", finalText, images));
+            return messages;
+        }
+
+        messages.add(new KieClient.ChatMessage("system", systemText));
+        StringBuilder contentBuilder = new StringBuilder();
+        if (context.length() > 0) {
+            contentBuilder.append(context).append("\n");
+        }
+        contentBuilder.append("Текущий запрос:\n").append(content);
         String contentFinal = contentBuilder.toString().trim();
         if (contentFinal.isBlank()) {
             contentFinal = " ";
         }
-        List<String> images = imageUrls == null ? List.of() : imageUrls;
-        messages.add(new KieClient.ChatMessage("user", contentFinal, images));
+        messages.add(new KieClient.ChatMessage("user", contentFinal));
         return messages;
     }
 
