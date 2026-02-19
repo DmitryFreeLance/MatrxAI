@@ -286,23 +286,32 @@ public class KieClient {
         root.put("model", model == null ? "" : model);
         root.put("stream", false);
         ArrayNode arr = root.putArray("messages");
+        boolean multipart = false;
+        for (ChatMessage msg : messages) {
+            if (msg.imageUrls != null && !msg.imageUrls.isEmpty()) {
+                multipart = true;
+                break;
+            }
+        }
         for (ChatMessage msg : messages) {
             ObjectNode m = arr.addObject();
             m.put("role", msg.role == null ? "user" : msg.role);
             String content = msg.content == null ? "" : msg.content;
-            if (msg.imageUrls != null && !msg.imageUrls.isEmpty()) {
+            if (multipart) {
                 ArrayNode parts = m.putArray("content");
                 ObjectNode textPart = parts.addObject();
                 textPart.put("type", "text");
                 textPart.put("text", content);
-                for (String url : msg.imageUrls) {
-                    if (url == null || url.isBlank()) {
-                        continue;
+                if (msg.imageUrls != null && !msg.imageUrls.isEmpty()) {
+                    for (String url : msg.imageUrls) {
+                        if (url == null || url.isBlank()) {
+                            continue;
+                        }
+                        ObjectNode imgPart = parts.addObject();
+                        imgPart.put("type", "image_url");
+                        ObjectNode img = imgPart.putObject("image_url");
+                        img.put("url", url);
                     }
-                    ObjectNode imgPart = parts.addObject();
-                    imgPart.put("type", "image_url");
-                    ObjectNode img = imgPart.putObject("image_url");
-                    img.put("url", url);
                 }
             } else {
                 m.put("content", content);
