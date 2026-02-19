@@ -52,6 +52,40 @@ public class KieClient {
         }
     }
 
+    public String uploadBase64(byte[] bytes, String fileName, String mimeType) throws IOException {
+        if (bytes == null || bytes.length == 0) {
+            return null;
+        }
+        String safeName = (fileName == null || fileName.isBlank()) ? "photo.jpg" : fileName;
+        String safeMime = (mimeType == null || mimeType.isBlank()) ? "image/jpeg" : mimeType;
+        String base64 = java.util.Base64.getEncoder().encodeToString(bytes);
+        String dataUrl = "data:" + safeMime + ";base64," + base64;
+
+        String payload = "{" +
+                "\"base64Data\":\"" + escape(dataUrl) + "\"," +
+                "\"uploadPath\":\"telegram\"," +
+                "\"fileName\":\"" + escape(safeName) + "\"" +
+                "}";
+
+        RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
+        Request request = new Request.Builder()
+                .url(config.kieUploadBase + "/api/file-base64-upload")
+                .addHeader("Authorization", "Bearer " + config.kieApiKey)
+                .post(body)
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String err = response.body() != null ? response.body().string() : "";
+                throw new IOException("Kie base64 upload failed: " + response.code() + " " + err);
+            }
+            String respBody = response.body() != null ? response.body().string() : "{}";
+            JsonNode json = mapper.readTree(respBody);
+            String downloadUrl = json.path("data").path("downloadUrl").asText();
+            return downloadUrl.isBlank() ? json.path("data").path("fileUrl").asText() : downloadUrl;
+        }
+    }
+
     public String createNanoBananaTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String outputFormat, String resolution) throws IOException {
         String payload;
         if ("nano-banana-pro".equalsIgnoreCase(model)) {

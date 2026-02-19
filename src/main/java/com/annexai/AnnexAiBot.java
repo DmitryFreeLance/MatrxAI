@@ -786,10 +786,27 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             boolean success = false;
             try {
                 List<String> imageUrls = new ArrayList<>();
+                boolean geminiUpload = isGeminiModel(normalizeModel(user.currentModel));
+                final int geminiMaxBytes = 9 * 1024 * 1024;
                 int i = 1;
                 for (String fileId : pendingImages) {
                     String url = getTelegramFileUrl(fileId);
-                    String uploaded = kieClient.uploadFileUrl(url, "tg_" + user.tgId + "_" + i);
+                    String fileName = guessFileNameFromUrl(url, i);
+                    String uploaded = null;
+                    if (geminiUpload) {
+                        byte[] bytes = downloadBytesLimited(url, geminiMaxBytes);
+                        if (bytes != null) {
+                            String mimeType = guessMimeType(fileName);
+                            try {
+                                uploaded = kieClient.uploadBase64(bytes, fileName, mimeType);
+                            } catch (Exception ignored) {
+                                uploaded = null;
+                            }
+                        }
+                    }
+                    if (uploaded == null || uploaded.isBlank()) {
+                        uploaded = kieClient.uploadFileUrl(url, fileName);
+                    }
                     if (uploaded != null && !uploaded.isBlank()) {
                         imageUrls.add(uploaded);
                     }
@@ -1891,6 +1908,60 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return "https://api.telegram.org/file/bot" + config.botToken + "/" + file.getFilePath();
     }
 
+    private String guessFileNameFromUrl(String url, int index) {
+        if (url == null || url.isBlank()) {
+            return "photo_" + index + ".jpg";
+        }
+        String clean = url.split("\\?")[0];
+        int slash = clean.lastIndexOf('/');
+        String name = slash >= 0 ? clean.substring(slash + 1) : clean;
+        if (name == null || name.isBlank()) {
+            return "photo_" + index + ".jpg";
+        }
+        if (!name.contains(".")) {
+            return name + ".jpg";
+        }
+        return name;
+    }
+
+    private String guessMimeType(String fileName) {
+        if (fileName == null) {
+            return "image/jpeg";
+        }
+        String lower = fileName.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".png")) {
+            return "image/png";
+        }
+        if (lower.endsWith(".webp")) {
+            return "image/webp";
+        }
+        if (lower.endsWith(".gif")) {
+            return "image/gif";
+        }
+        if (lower.endsWith(".jpeg") || lower.endsWith(".jpg")) {
+            return "image/jpeg";
+        }
+        return "image/jpeg";
+    }
+
+    private byte[] downloadBytesLimited(String url, int maxBytes) {
+        try {
+            Request request = new Request.Builder().url(url).build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) {
+                    return null;
+                }
+                byte[] bytes = response.body().bytes();
+                if (bytes.length > maxBytes) {
+                    return null;
+                }
+                return bytes;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private boolean saveIncomingPhotos(Database.User user, Message message) {
         long userId = user.tgId;
         List<PhotoSize> photos = message.getPhoto();
@@ -2147,11 +2218,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                                                             List<String> imageUrls) {
         List<KieClient.ChatMessage> messages = new ArrayList<>();
         List<String> images = imageUrls == null ? List.of() : imageUrls;
-        boolean hasImages = !images.isEmpty();
         String systemText = "Ты — текстовая модель. Отвечай только текстом. " +
                 "Не предлагай генерацию файлов, изображений, аудио, видео и не выводи JSON-команды. " +
                 "Не используй символы '*' и '#', не применяй Markdown-разметку. " +
                 "Отвечай только на последнее сообщение пользователя; предыдущие сообщения используй лишь как контекст.";
+
+        messages.add(new KieClient.ChatMessage("system", systemText));
 
         StringBuilder context = new StringBuilder();
         if (history != null && !history.isEmpty()) {
@@ -2176,22 +2248,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
 
         String content = prompt == null ? "" : prompt.trim();
-        if (hasImages) {
-            StringBuilder text = new StringBuilder();
-            text.append(systemText).append("\n\n");
-            if (context.length() > 0) {
-                text.append(context).append("\n");
-            }
-            text.append("Текущий запрос:\n").append(content);
-            String finalText = text.toString().trim();
-            if (finalText.isBlank()) {
-                finalText = " ";
-            }
-            messages.add(new KieClient.ChatMessage("user", finalText, images));
-            return messages;
-        }
-
-        messages.add(new KieClient.ChatMessage("system", systemText));
         StringBuilder contentBuilder = new StringBuilder();
         if (context.length() > 0) {
             contentBuilder.append(context).append("\n");
@@ -2201,7 +2257,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (contentFinal.isBlank()) {
             contentFinal = " ";
         }
-        messages.add(new KieClient.ChatMessage("user", contentFinal));
+        if (images.isEmpty()) {
+            messages.add(new KieClient.ChatMessage("user", contentFinal));
+        } else {
+            messages.add(new KieClient.ChatMessage("user", contentFinal, images));
+        }
         return messages;
     }
 
