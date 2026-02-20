@@ -933,8 +933,30 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     boolean audio = user.klingAudioEnabled;
                     String mode = klingModeValue(user.klingMode);
                     List<String> clipImages = imageUrls.size() > 2 ? imageUrls.subList(0, 2) : imageUrls;
-                    System.out.println("Kie request model=" + MODEL_KLING_3 + " duration=" + seconds + " ratio=" + ratio + " mode=" + mode + " audio=" + audio + " images=" + clipImages.size());
-                    taskId = kieClient.createKlingTask(preparedPrompt, clipImages, ratio, seconds, audio, mode);
+                    int maxAttempts = 3;
+                    PollResult result = null;
+                    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                        System.out.println("Kie request model=" + MODEL_KLING_3 + " duration=" + seconds + " ratio=" + ratio + " mode=" + mode + " audio=" + audio + " images=" + clipImages.size() + " attempt=" + attempt + "/" + maxAttempts);
+                        taskId = kieClient.createKlingTask(preparedPrompt, clipImages, ratio, seconds, audio, mode);
+                        result = pollTaskAndSend(taskId, user.tgId, model);
+                        if (result.success || !result.timeout) {
+                            break;
+                        }
+                        try {
+                            Thread.sleep(1500L * attempt);
+                        } catch (InterruptedException ignored) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                    if (result == null) {
+                        throw new IllegalStateException("Пустой ответ от Kling.");
+                    }
+                    if (!result.success && result.timeout) {
+                        safeSend(user.tgId, "Генерация не удалась: " + mapKieErrorMessage("generate task timeout") + "\nТокены возвращены.");
+                    }
+                    success = result.success;
+                    return;
                 } else if (isGeminiModel(model)) {
                     List<Database.GeminiMessage> history = user.geminiHistoryEnabled
                             ? db.listGeminiMessages(user.tgId, GEMINI_HISTORY_LIMIT)
@@ -965,7 +987,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     taskId = kieClient.createNanoBananaTask(model, prompt, imageUrls, aspectRatio, outputFormat, resolution);
                 }
 
-                success = pollTaskAndSend(taskId, user.tgId, model);
+                PollResult result = pollTaskAndSend(taskId, user.tgId, model);
+                success = result.success;
             } catch (Exception e) {
                 deleteMessageQuietly(user.tgId, finalProgressMessageId);
                 safeSend(user.tgId, "Ошибка при генерации: " + mapKieErrorMessage(e.getMessage()) + "\nТокены возвращены.");
@@ -981,7 +1004,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         });
     }
 
-    private boolean pollTaskAndSend(String taskId, long chatId, String modelUsed) {
+    private PollResult pollTaskAndSend(String taskId, long chatId, String modelUsed) {
         int attempts = 200;
         for (int i = 0; i < attempts; i++) {
             try {
@@ -997,7 +1020,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                                 ? "Готово, но без видео. Попробуйте другой запрос.\nТокены возвращены."
                                 : "Готово, но без изображений. Попробуйте другой запрос.\nТокены возвращены.";
                         safeSend(chatId, msg);
-                        return false;
+                        return PollResult.fail("empty_result", false);
                     }
                     boolean isVideo = isKlingModel(modelUsed) || urls.stream().anyMatch(this::isVideoUrl);
                     for (String url : urls) {
@@ -1007,23 +1030,50 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                             sendPhotoFromUrl(chatId, url);
                         }
                     }
-                    return true;
+                    return PollResult.success();
                 }
                 if ("failed".equalsIgnoreCase(info.state)
                         || "fail".equalsIgnoreCase(info.state)
                         || "error".equalsIgnoreCase(info.state)
                         || "canceled".equalsIgnoreCase(info.state)
                         || "cancelled".equalsIgnoreCase(info.state)) {
-                    safeSend(chatId, "Генерация не удалась: " + mapKieErrorMessage(info.failReason) + "\nТокены возвращены.");
-                    return false;
+                    boolean timeout = info.failReason != null
+                            && info.failReason.toLowerCase(Locale.ROOT).contains("generate task timeout");
+                    if (!(isKlingModel(modelUsed) && timeout)) {
+                        safeSend(chatId, "Генерация не удалась: " + mapKieErrorMessage(info.failReason) + "\nТокены возвращены.");
+                    }
+                    return PollResult.fail(info.failReason, timeout);
                 }
             } catch (Exception e) {
                 safeSend(chatId, "Ошибка при проверке задачи: " + mapKieErrorMessage(e.getMessage()) + "\nТокены возвращены.");
-                return false;
+                return PollResult.fail(e.getMessage(), false);
             }
         }
-        safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
-        return false;
+        boolean timeout = isKlingModel(modelUsed);
+        if (!timeout) {
+            safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
+        }
+        return PollResult.fail("wait_timeout", timeout);
+    }
+
+    private static class PollResult {
+        final boolean success;
+        final String failReason;
+        final boolean timeout;
+
+        private PollResult(boolean success, String failReason, boolean timeout) {
+            this.success = success;
+            this.failReason = failReason;
+            this.timeout = timeout;
+        }
+
+        static PollResult success() {
+            return new PollResult(true, null, false);
+        }
+
+        static PollResult fail(String reason, boolean timeout) {
+            return new PollResult(false, reason, timeout);
+        }
     }
 
     private List<String> extractResultUrls(String resultJson) {
@@ -2887,6 +2937,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         String lower = raw.toLowerCase(Locale.ROOT);
         if (lower.contains("server exception")) {
             return "Ошибка сервера, попробуйте еще раз.";
+        }
+        if (lower.contains("generate task timeout")) {
+            return "Генерация заняла слишком много времени. Попробуйте уменьшить длительность или отключить аудио и повторите.";
         }
         if (lower.contains("error code: 524") || lower.contains(" 524")) {
             return "Сервер не успел ответить. Попробуйте еще раз.";

@@ -273,7 +273,7 @@ public class KieClient {
             images.append("]");
             fields.add("\"image_urls\":" + images);
         }
-        if (aspectRatio != null && !aspectRatio.isBlank()) {
+        if ((imageUrls == null || imageUrls.isEmpty()) && aspectRatio != null && !aspectRatio.isBlank()) {
             fields.add("\"aspect_ratio\":\"" + escape(aspectRatio) + "\"");
         }
         fields.add("\"duration\":\"" + durationSeconds + "\"");
