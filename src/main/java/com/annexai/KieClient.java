@@ -52,40 +52,6 @@ public class KieClient {
         }
     }
 
-    public String uploadBase64(byte[] bytes, String fileName, String mimeType) throws IOException {
-        if (bytes == null || bytes.length == 0) {
-            return null;
-        }
-        String safeName = (fileName == null || fileName.isBlank()) ? "photo.jpg" : fileName;
-        String safeMime = (mimeType == null || mimeType.isBlank()) ? "image/jpeg" : mimeType;
-        String base64 = java.util.Base64.getEncoder().encodeToString(bytes);
-        String dataUrl = "data:" + safeMime + ";base64," + base64;
-
-        String payload = "{" +
-                "\"base64Data\":\"" + escape(dataUrl) + "\"," +
-                "\"uploadPath\":\"telegram\"," +
-                "\"fileName\":\"" + escape(safeName) + "\"" +
-                "}";
-
-        RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
-        Request request = new Request.Builder()
-                .url(config.kieUploadBase + "/api/file-base64-upload")
-                .addHeader("Authorization", "Bearer " + config.kieApiKey)
-                .post(body)
-                .build();
-
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                String err = response.body() != null ? response.body().string() : "";
-                throw new IOException("Kie base64 upload failed: " + response.code() + " " + err);
-            }
-            String respBody = response.body() != null ? response.body().string() : "{}";
-            JsonNode json = mapper.readTree(respBody);
-            String downloadUrl = json.path("data").path("downloadUrl").asText();
-            return downloadUrl.isBlank() ? json.path("data").path("fileUrl").asText() : downloadUrl;
-        }
-    }
-
     public String createNanoBananaTask(String model, String prompt, List<String> imageUrls, String aspectRatio, String outputFormat, String resolution) throws IOException {
         String payload;
         if ("nano-banana-pro".equalsIgnoreCase(model)) {
@@ -288,6 +254,63 @@ public class KieClient {
         }
     }
 
+    public String createKlingTask(String prompt,
+                                  List<String> imageUrls,
+                                  String aspectRatio,
+                                  int durationSeconds,
+                                  boolean sound,
+                                  String mode) throws IOException {
+        List<String> fields = new java.util.ArrayList<>();
+        fields.add("\"prompt\":\"" + escape(prompt) + "\"");
+        if (imageUrls != null && !imageUrls.isEmpty()) {
+            StringBuilder images = new StringBuilder("[");
+            for (int i = 0; i < imageUrls.size(); i++) {
+                if (i > 0) {
+                    images.append(",");
+                }
+                images.append("\"").append(escape(imageUrls.get(i))).append("\"");
+            }
+            images.append("]");
+            fields.add("\"image_urls\":" + images);
+        }
+        if (aspectRatio != null && !aspectRatio.isBlank()) {
+            fields.add("\"aspect_ratio\":\"" + escape(aspectRatio) + "\"");
+        }
+        fields.add("\"duration\":\"" + durationSeconds + "\"");
+        fields.add("\"sound\":" + (sound ? "true" : "false"));
+        if (mode != null && !mode.isBlank()) {
+            fields.add("\"mode\":\"" + escape(mode) + "\"");
+        }
+        fields.add("\"multi_shots\":false");
+
+        String input = String.join(",", fields);
+        String payload = "{" +
+                "\"model\":\"kling-3.0/video\"," +
+                "\"input\":{" + input + "}" +
+                "}";
+
+        RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
+        Request request = new Request.Builder()
+                .url(config.kieApiBase + "/api/v1/jobs/createTask")
+                .addHeader("Authorization", "Bearer " + config.kieApiKey)
+                .post(body)
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String err = response.body() != null ? response.body().string() : "";
+                throw new IOException("Kie createTask failed: " + response.code() + " " + err);
+            }
+            String respBody = response.body() != null ? response.body().string() : "{}";
+            JsonNode json = mapper.readTree(respBody);
+            String taskId = json.path("data").path("taskId").asText();
+            if (taskId == null || taskId.isBlank()) {
+                throw new IOException("Kie createTask returned empty taskId: " + respBody);
+            }
+            return taskId;
+        }
+    }
+
     public String createGeminiTask(String model, String prompt, List<String> imageUrls, List<String> fileUrls) throws IOException {
         StringBuilder content = new StringBuilder(prompt == null ? "" : prompt.trim());
         if (imageUrls != null && !imageUrls.isEmpty()) {
@@ -308,7 +331,7 @@ public class KieClient {
                 content.append(url).append("\n");
             }
         }
-        List<ChatMessage> messages = List.of(new ChatMessage("user", content.toString().trim(), imageUrls));
+        List<ChatMessage> messages = List.of(new ChatMessage("user", content.toString().trim()));
         return createGeminiCompletion(model, messages);
     }
 
@@ -319,36 +342,11 @@ public class KieClient {
         ObjectNode root = mapper.createObjectNode();
         root.put("stream", false);
         ArrayNode arr = root.putArray("messages");
-        boolean multipart = false;
-        for (ChatMessage msg : messages) {
-            if (msg.imageUrls != null && !msg.imageUrls.isEmpty()) {
-                multipart = true;
-                break;
-            }
-        }
         for (ChatMessage msg : messages) {
             ObjectNode m = arr.addObject();
             m.put("role", msg.role == null ? "user" : msg.role);
             String content = msg.content == null ? "" : msg.content;
-            if (multipart) {
-                ArrayNode parts = m.putArray("content");
-                ObjectNode textPart = parts.addObject();
-                textPart.put("type", "text");
-                textPart.put("text", content);
-                if (msg.imageUrls != null && !msg.imageUrls.isEmpty()) {
-                    for (String url : msg.imageUrls) {
-                        if (url == null || url.isBlank()) {
-                            continue;
-                        }
-                        ObjectNode imgPart = parts.addObject();
-                        imgPart.put("type", "image_url");
-                        ObjectNode img = imgPart.putObject("image_url");
-                        img.put("url", url);
-                    }
-                }
-            } else {
-                m.put("content", content);
-            }
+            m.put("content", content);
         }
 
         String payload = mapper.writeValueAsString(root);
@@ -359,24 +357,37 @@ public class KieClient {
                 .post(body)
                 .build();
 
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                String err = response.body() != null ? response.body().string() : "";
-                throw new IOException("Kie gemini completion failed: " + response.code() + " " + err);
+        int attempts = 2;
+        for (int i = 0; i < attempts; i++) {
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    String err = response.body() != null ? response.body().string() : "";
+                    int code = response.code();
+                    if ((code == 524 || code == 504 || code == 408) && i < attempts - 1) {
+                        try {
+                            Thread.sleep(1200);
+                        } catch (InterruptedException ignored) {
+                            Thread.currentThread().interrupt();
+                        }
+                        continue;
+                    }
+                    throw new IOException("Kie gemini completion failed: " + code + " " + err);
+                }
+                String respBody = response.body() != null ? response.body().string() : "{}";
+                JsonNode json = mapper.readTree(respBody);
+                JsonNode choices = json.path("choices");
+                String content = "";
+                if (choices.isArray() && choices.size() > 0) {
+                    JsonNode msg = choices.get(0).path("message");
+                    content = msg.path("content").asText();
+                }
+                if (content == null || content.isBlank()) {
+                    throw new IOException("Kie gemini completion returned empty content: " + respBody);
+                }
+                return content;
             }
-            String respBody = response.body() != null ? response.body().string() : "{}";
-            JsonNode json = mapper.readTree(respBody);
-            JsonNode choices = json.path("choices");
-            String content = "";
-            if (choices.isArray() && choices.size() > 0) {
-                JsonNode msg = choices.get(0).path("message");
-                content = msg.path("content").asText();
-            }
-            if (content == null || content.isBlank()) {
-                throw new IOException("Kie gemini completion returned empty content: " + respBody);
-            }
-            return content;
         }
+        throw new IOException("Kie gemini completion failed: 524 error code: 524");
     }
 
     private String geminiEndpointForModel(String model) {
@@ -390,18 +401,10 @@ public class KieClient {
     public static class ChatMessage {
         public final String role;
         public final String content;
-        public final List<String> imageUrls;
 
         public ChatMessage(String role, String content) {
             this.role = role;
             this.content = content;
-            this.imageUrls = List.of();
-        }
-
-        public ChatMessage(String role, String content, List<String> imageUrls) {
-            this.role = role;
-            this.content = content;
-            this.imageUrls = imageUrls == null ? List.of() : imageUrls;
         }
     }
 

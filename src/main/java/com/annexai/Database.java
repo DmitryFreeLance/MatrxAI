@@ -47,7 +47,12 @@ public class Database {
                     ideogram_image_size TEXT NOT NULL DEFAULT 'square_hd',
                     ideogram_expand_prompt INTEGER NOT NULL DEFAULT 1,
                     gemini_history_enabled INTEGER NOT NULL DEFAULT 1,
-                    gemini_show_cost_enabled INTEGER NOT NULL DEFAULT 1
+                    gemini_show_cost_enabled INTEGER NOT NULL DEFAULT 1,
+                    kling_duration INTEGER NOT NULL DEFAULT 3,
+                    kling_aspect_ratio TEXT NOT NULL DEFAULT '16:9',
+                    kling_audio_enabled INTEGER NOT NULL DEFAULT 0,
+                    kling_mode TEXT NOT NULL DEFAULT 'std',
+                    kling_translate_enabled INTEGER NOT NULL DEFAULT 1
                 )
             """);
 
@@ -132,6 +137,26 @@ public class Database {
             }
             try {
                 st.execute("ALTER TABLE users ADD COLUMN gemini_show_cost_enabled INTEGER NOT NULL DEFAULT 1");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN kling_duration INTEGER NOT NULL DEFAULT 3");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN kling_aspect_ratio TEXT NOT NULL DEFAULT '16:9'");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN kling_audio_enabled INTEGER NOT NULL DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN kling_mode TEXT NOT NULL DEFAULT 'std'");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN kling_translate_enabled INTEGER NOT NULL DEFAULT 1");
             } catch (SQLException ignored) {
             }
 
@@ -226,8 +251,8 @@ public class Database {
 
         String created = now();
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled) " +
-                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1, 'balanced', 'auto', 'square_hd', 1, 1, 1)")) {
+                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled, kling_duration, kling_aspect_ratio, kling_audio_enabled, kling_mode, kling_translate_enabled) " +
+                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1, 'balanced', 'auto', 'square_hd', 1, 1, 1, 3, '16:9', 0, 'std', 1)")) {
             ps.setLong(1, tgId);
             ps.setString(2, username);
             ps.setString(3, firstName);
@@ -248,7 +273,7 @@ public class Database {
 
     public synchronized User getUser(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled FROM users WHERE tg_id = ?")) {
+                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled, kling_duration, kling_aspect_ratio, kling_audio_enabled, kling_mode, kling_translate_enabled FROM users WHERE tg_id = ?")) {
             ps.setLong(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -281,6 +306,11 @@ public class Database {
                     u.geminiHistoryEnabled = rs.wasNull() || historyFlag == 1;
                     int costFlag = rs.getInt("gemini_show_cost_enabled");
                     u.geminiShowCostEnabled = rs.wasNull() || costFlag == 1;
+                    u.klingDuration = rs.getInt("kling_duration");
+                    u.klingAspectRatio = rs.getString("kling_aspect_ratio");
+                    u.klingAudioEnabled = rs.getInt("kling_audio_enabled") == 1;
+                    u.klingMode = rs.getString("kling_mode");
+                    u.klingTranslateEnabled = rs.getInt("kling_translate_enabled") == 1;
                     return u;
                 }
             }
@@ -354,6 +384,26 @@ public class Database {
 
     public synchronized void setGeminiShowCostEnabled(long tgId, boolean enabled) {
         updateUserField(tgId, "gemini_show_cost_enabled", enabled ? "1" : "0");
+    }
+
+    public synchronized void setKlingDuration(long tgId, int seconds) {
+        updateUserField(tgId, "kling_duration", String.valueOf(seconds));
+    }
+
+    public synchronized void setKlingAspectRatio(long tgId, String ratio) {
+        updateUserField(tgId, "kling_aspect_ratio", ratio);
+    }
+
+    public synchronized void setKlingAudioEnabled(long tgId, boolean enabled) {
+        updateUserField(tgId, "kling_audio_enabled", enabled ? "1" : "0");
+    }
+
+    public synchronized void setKlingMode(long tgId, String mode) {
+        updateUserField(tgId, "kling_mode", mode);
+    }
+
+    public synchronized void setKlingTranslateEnabled(long tgId, boolean enabled) {
+        updateUserField(tgId, "kling_translate_enabled", enabled ? "1" : "0");
     }
 
     public synchronized boolean ensureWelcomeBonus(long tgId) {
@@ -993,6 +1043,11 @@ public class Database {
         public boolean ideogramExpandPrompt;
         public boolean geminiHistoryEnabled;
         public boolean geminiShowCostEnabled;
+        public int klingDuration;
+        public String klingAspectRatio;
+        public boolean klingAudioEnabled;
+        public String klingMode;
+        public boolean klingTranslateEnabled;
     }
 
     public static class GeminiMessage {
