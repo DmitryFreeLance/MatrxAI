@@ -1447,7 +1447,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "• <b>Veo 3.1</b> — кинематографичные ролики и красивые планы\n" +
                 "• <b>Sora 2</b> — сюжетные клипы, движение камеры, сложные сцены\n" +
                 "• <b>Kling 3.0</b> — динамика, эффектные переходы, короткие рекламные видео\n\n" +
-                "ИДЕИ, РОЗЫГРЫШИ - @MatrxAIBot\n\n" +
+                "ИДЕИ, РОЗЫГРЫШИ - @Matrx_AI\n\n" +
                 "Твой баланс: <b>" + formatNumber(user.balance) + "</b> токенов";
 
         SendMessage msg = new SendMessage(String.valueOf(chatId), text);
