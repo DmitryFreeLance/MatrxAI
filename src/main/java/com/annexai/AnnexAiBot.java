@@ -67,6 +67,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_KLING_3 = "kling-3.0/video";
     private static final String MODEL_SORA_2_TEXT = "sora-2-text-to-video";
     private static final String MODEL_SORA_2_IMAGE = "sora-2-image-to-video";
+    private static final String MODEL_VEO_3_1 = "veo-3.1";
     private static final int GEMINI_HISTORY_LIMIT = 12;
 
     private final Config config;
@@ -258,6 +259,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, "Выберите модель:", modelSelectKeyboard());
             return;
         }
+        if ("menu:current_model".equals(data)) {
+            modelSelectedThisSession.add(userId);
+            if (isGeminiModel(normalizeModel(user.currentModel))) {
+                SendMessage msg = new SendMessage(String.valueOf(chatId), geminiDialogText(user));
+                msg.setReplyMarkup(geminiDialogKeyboard(user));
+                executeWithRetry(msg);
+            } else {
+                SendMessage msg = new SendMessage(String.valueOf(chatId), modelInfoText(user));
+                msg.setReplyMarkup(modelInfoKeyboard(user));
+                executeWithRetry(msg);
+            }
+            return;
+        }
         if ("model:nano".equals(data)) {
             db.setCurrentModel(userId, MODEL_NANO_BANANA);
             user.currentModel = MODEL_NANO_BANANA;
@@ -297,6 +311,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("model:kling".equals(data)) {
             db.setCurrentModel(userId, MODEL_KLING_3);
             user.currentModel = MODEL_KLING_3;
+            db.clearPendingImages(userId);
+            modelSelectedThisSession.add(userId);
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
+            return;
+        }
+        if ("model:veo".equals(data)) {
+            db.setCurrentModel(userId, MODEL_VEO_3_1);
+            user.currentModel = MODEL_VEO_3_1;
             db.clearPendingImages(userId);
             modelSelectedThisSession.add(userId);
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
@@ -360,6 +382,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         if ("sora:format_menu".equals(data)) {
             editMessage(chatId, messageId, soraFormatMenuText(user), soraFormatKeyboard(user));
+            return;
+        }
+        if ("veo:mode_menu".equals(data)) {
+            editMessage(chatId, messageId, veoModeMenuText(user), veoModeKeyboard(user));
+            return;
+        }
+        if ("veo:format_menu".equals(data)) {
+            editMessage(chatId, messageId, veoFormatMenuText(user), veoFormatKeyboard(user));
             return;
         }
         if (data.startsWith("settings:format:")) {
@@ -469,6 +499,22 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             String normalized = "portrait".equalsIgnoreCase(ratio) ? "portrait" : "landscape";
             db.setSoraAspectRatio(userId, normalized);
             user.soraAspectRatio = normalized;
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
+            return;
+        }
+        if (data.startsWith("veo:mode:")) {
+            String mode = data.substring("veo:mode:".length());
+            String normalized = "quality".equalsIgnoreCase(mode) ? "quality" : "fast";
+            db.setVeoMode(userId, normalized);
+            user.veoMode = normalized;
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
+            return;
+        }
+        if (data.startsWith("veo:format:")) {
+            String ratio = data.substring("veo:format:".length());
+            String normalized = "9:16".equals(ratio) ? "9:16" : "16:9";
+            db.setVeoAspectRatio(userId, normalized);
+            user.veoAspectRatio = normalized;
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
             return;
         }
@@ -796,7 +842,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         boolean isGemini = isGeminiModel(normalizedModel);
         boolean isKling = isKlingModel(normalizedModel);
         boolean isSora = isSoraModel(normalizedModel);
-        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram && !isGemini && !isKling && !isSora) {
+        boolean isVeo = isVeoModel(normalizedModel);
+        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram && !isGemini && !isKling && !isSora && !isVeo) {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
@@ -847,6 +894,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isKling && fileIds.size() > 2) {
             fileIds = fileIds.subList(0, 2);
         }
+        if (isVeo && fileIds.size() > 2) {
+            fileIds = fileIds.subList(0, 2);
+        }
         List<String> pendingImages = List.copyOf(fileIds);
         db.addBalance(user.tgId, -cost);
 
@@ -881,6 +931,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             } else if (isSoraModel(normalizedModel)) {
                 startText.append("⏱ Длительность: ").append(soraDurationValue(user.soraDuration)).append(" сек.\n");
                 startText.append("📐 Формат видео: ").append(soraAspectRatioLabel(user.soraAspectRatio)).append("\n");
+            } else if (isVeoModel(normalizedModel)) {
+                startText.append("🎚 Режим: ").append(veoModeLabel(user.veoMode)).append("\n");
+                startText.append("📐 Формат видео: ").append(veoAspectRatioLabel(user.veoAspectRatio)).append("\n");
             } else {
                 String resolutionLabel = resolutionLabel(user.resolution);
                 String formatLabel = formatLabel(user.outputFormat);
@@ -993,6 +1046,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     PollResult result = pollTaskAndSend(taskId, user.tgId, model);
                     success = result.success;
                     return;
+                } else if (isVeoModel(model)) {
+                    String preparedPrompt = prepareVeoPrompt(prompt);
+                    String ratio = veoAspectRatioValue(user.veoAspectRatio);
+                    List<String> clipImages = imageUrls.size() > 2 ? imageUrls.subList(0, 2) : imageUrls;
+                    String veoModel = veoModeValue(user.veoMode);
+                    System.out.println("Kie request model=" + veoModel + " ratio=" + ratio + " images=" + clipImages.size());
+                    taskId = kieClient.createVeoTask(veoModel, preparedPrompt, clipImages, ratio);
+                    PollResult result = pollTaskAndSend(taskId, user.tgId, model);
+                    success = result.success;
+                    return;
                 } else if (isGeminiModel(model)) {
                     List<Database.GeminiMessage> history = user.geminiHistoryEnabled
                             ? db.listGeminiMessages(user.tgId, GEMINI_HISTORY_LIMIT)
@@ -1009,6 +1072,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         outputText = outputText + "\n\n💰 Стоимость: " + formatNumber(cost) + " токенов";
                     }
                     sendLongMessage(user.tgId, outputText);
+                    sendPostResponseHint(user.tgId);
                     if (user.geminiHistoryEnabled) {
                         db.addGeminiMessage(user.tgId, "user", prompt);
                         db.addGeminiMessage(user.tgId, "assistant", responseText);
@@ -1058,7 +1122,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         safeSend(chatId, msg);
                         return PollResult.fail("empty_result", false);
                     }
-                    boolean isVideo = isKlingModel(modelUsed) || isSoraModel(modelUsed) || urls.stream().anyMatch(this::isVideoUrl);
+                    boolean isVideo = isKlingModel(modelUsed) || isSoraModel(modelUsed) || isVeoModel(modelUsed) || urls.stream().anyMatch(this::isVideoUrl);
                     for (String url : urls) {
                         if (isVideo) {
                             sendVideoFromUrl(chatId, url);
@@ -1066,6 +1130,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                             sendPhotoFromUrl(chatId, url);
                         }
                     }
+                    sendPostResponseHint(chatId);
                     return PollResult.success();
                 }
                 if ("failed".equalsIgnoreCase(info.state)
@@ -1145,6 +1210,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 if (!urls.isEmpty()) {
                     return urls;
                 }
+            }
+            JsonNode videoUrl = node.path("videoUrl");
+            if (videoUrl.isTextual() && !videoUrl.asText().isBlank()) {
+                urls.add(videoUrl.asText());
+                return urls;
+            }
+            JsonNode videoUrlAlt = node.path("video_url");
+            if (videoUrlAlt.isTextual() && !videoUrlAlt.asText().isBlank()) {
+                urls.add(videoUrlAlt.asText());
+                return urls;
             }
             JsonNode imageUrls = node.path("image_urls");
             if (imageUrls.isArray()) {
@@ -1326,7 +1401,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "• <b>Ideogram V3</b> — сильная типографика, постеры и точная работа с текстом\n" +
                 "• <b>NanoBanana</b> — быстрые правки: замена объектов, улучшение качества, вариации\n\n" +
                 "🎬 Видео\n" +
-                "• <b>Veo 3</b> — кинематографичные ролики и красивые планы\n" +
+                "• <b>Veo 3.1</b> — кинематографичные ролики и красивые планы\n" +
                 "• <b>Sora 2</b> — сюжетные клипы, движение камеры, сложные сцены\n" +
                 "• <b>Kling 3.0</b> — динамика, эффектные переходы, короткие рекламные видео\n\n" +
                 "Твой баланс: <b>" + formatNumber(user.balance) + "</b> токенов";
@@ -1353,6 +1428,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 List.of(button("🌀 Flux 2", "model:flux")),
                 List.of(button("🧩 Ideogram V3", "model:ideogram")),
                 List.of(button("🎞 Kling 3.0", "model:kling")),
+                List.of(button("🌊 Veo 3.1", "model:veo")),
                 List.of(button("🎬 Sora 2", "model:sora")),
                 List.of(button("⬅️ Назад", "menu:start"))
         ));
@@ -1385,6 +1461,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         } else if (isSoraModel(normalized)) {
             rows.add(List.of(button("⏱ Длительность", "sora:duration_menu")));
             rows.add(List.of(button("📐 Формат видео", "sora:format_menu")));
+        } else if (isVeoModel(normalized)) {
+            rows.add(List.of(button("🎚 Режим", "veo:mode_menu")));
+            rows.add(List.of(button("📐 Формат видео", "veo:format_menu")));
         }
         rows.add(List.of(button("🏠 Вернуться в меню", "menu:start")));
         return new InlineKeyboardMarkup(rows);
@@ -1533,6 +1612,13 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         ));
     }
 
+    private InlineKeyboardMarkup postResponseKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button("Изменить настройки", "menu:current_model")),
+                List.of(button("Вернуться в меню", "menu:start"))
+        ));
+    }
+
     private InlineKeyboardMarkup adminKeyboard() {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button("📊 Статистика", "admin:stats")),
@@ -1625,6 +1711,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     "⚙️ Параметры\n" +
                     "Длительность: " + seconds + " сек.\n" +
                     "Качество: стандартное\n" +
+                    "Формат: " + ratio + "\n\n" +
+                    "🔹 Баланса хватит на " + queries + " видео. 1 видео = " + formatNumber(cost) + " токенов.";
+        }
+        if (isVeoModel(normalized)) {
+            String modeLabel = veoModeLabel(user.veoMode);
+            String ratio = veoAspectRatioLabel(user.veoAspectRatio);
+            return "🌊 Veo 3.1 · лучший генератор видео\n\n" +
+                    "✏️ Нейросеть создает качественные 8 секундные видео, может имитировать голоса, сопровождать видео звуковой дорожкой и учитывать ваши пожелания.\n\n" +
+                    "📸 При желании можно прикрепить 1 фото с промптом и создать видео на его основе.\n\n" +
+                    "1️⃣:2️⃣ (начальный кадр / завершающий кадр). Прикрепите два фото в одном запросе и получите видео на их основе. При желании можете прикрепить описание.\n\n" +
+                    "⚙️ Параметры\n" +
+                    "Модель: " + modeLabel + "\n" +
                     "Формат: " + ratio + "\n\n" +
                     "🔹 Баланса хватит на " + queries + " видео. 1 видео = " + formatNumber(cost) + " токенов.";
         }
@@ -1874,6 +1972,36 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         return new InlineKeyboardMarkup(List.of(
                 List.of(button(optionLabel("📐 16:9", "landscape", ratio), "sora:format:landscape"),
                         button(optionLabel("📐 9:16", "portrait", ratio), "sora:format:portrait")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private String veoModeMenuText(Database.User user) {
+        return "🎚 Режим\n" +
+                "Текущий: " + veoModeLabel(user.veoMode) + "\n\n" +
+                "Выберите режим генерации.";
+    }
+
+    private InlineKeyboardMarkup veoModeKeyboard(Database.User user) {
+        String current = user.veoMode == null ? "fast" : user.veoMode;
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(optionLabel("Fast", "fast", current), "veo:mode:fast")),
+                List.of(button(optionLabel("Quality", "quality", current), "veo:mode:quality")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private String veoFormatMenuText(Database.User user) {
+        return "📐 Формат видео\n" +
+                "Текущий: " + veoAspectRatioLabel(user.veoAspectRatio) + "\n\n" +
+                "Выберите формат кадра.";
+    }
+
+    private InlineKeyboardMarkup veoFormatKeyboard(Database.User user) {
+        String ratio = veoAspectRatioValue(user.veoAspectRatio);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(optionLabel("📐 16:9", "16:9", ratio), "veo:format:16:9"),
+                        button(optionLabel("📐 9:16", "9:16", ratio), "veo:format:9:16")),
                 List.of(button("⬅️ Назад", "settings:back"))
         ));
     }
@@ -2384,6 +2512,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isSoraModel(normalized)) {
             return costForSora(user);
         }
+        if (isVeoModel(normalized)) {
+            return costForVeo(user);
+        }
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
         return costForUserResolution(user, res);
     }
@@ -2479,6 +2610,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_SORA_2_TEXT.equalsIgnoreCase(model) || MODEL_SORA_2_IMAGE.equalsIgnoreCase(model)) {
             return "Sora 2";
         }
+        if (MODEL_VEO_3_1.equalsIgnoreCase(model)) {
+            return "Veo 3.1";
+        }
         return model;
     }
 
@@ -2552,6 +2686,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("sora-2".equalsIgnoreCase(model) || "sora2".equalsIgnoreCase(model) || "sora".equalsIgnoreCase(model)) {
             return MODEL_SORA_2_TEXT;
         }
+        if (MODEL_VEO_3_1.equalsIgnoreCase(model)) {
+            return MODEL_VEO_3_1;
+        }
+        if ("veo-3.1".equalsIgnoreCase(model) || "veo3.1".equalsIgnoreCase(model) || "veo3".equalsIgnoreCase(model) || "veo".equalsIgnoreCase(model)) {
+            return MODEL_VEO_3_1;
+        }
         return model;
     }
 
@@ -2614,6 +2754,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 || "sora".equalsIgnoreCase(model);
     }
 
+    private boolean isVeoModel(String model) {
+        return MODEL_VEO_3_1.equalsIgnoreCase(model)
+                || "veo-3.1".equalsIgnoreCase(model)
+                || "veo3.1".equalsIgnoreCase(model)
+                || "veo3".equalsIgnoreCase(model)
+                || "veo".equalsIgnoreCase(model);
+    }
+
     private boolean isFluxFlexModel(String model) {
         return MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model)
                 || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model);
@@ -2632,6 +2780,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String prepareSoraPrompt(String prompt) {
+        return prompt == null ? "" : prompt.trim();
+    }
+
+    private String prepareVeoPrompt(String prompt) {
         return prompt == null ? "" : prompt.trim();
     }
 
@@ -2694,6 +2846,28 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String soraAspectRatioLabel(String ratio) {
         return "portrait".equalsIgnoreCase(ratio) ? "9:16" : "16:9";
+    }
+
+    private String veoModeValue(String mode) {
+        if ("quality".equalsIgnoreCase(mode)) {
+            return "veo3";
+        }
+        return "veo3_fast";
+    }
+
+    private String veoModeLabel(String mode) {
+        return "quality".equalsIgnoreCase(mode) ? "Veo 3.1 Quality" : "Veo 3.1 Fast";
+    }
+
+    private String veoAspectRatioValue(String ratio) {
+        if ("9:16".equals(ratio)) {
+            return "9:16";
+        }
+        return "16:9";
+    }
+
+    private String veoAspectRatioLabel(String ratio) {
+        return "9:16".equals(ratio) ? "9:16" : "16:9";
     }
 
     private String klingModeValue(String mode) {
@@ -2819,6 +2993,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return 60_000;
         }
         return 75_000;
+    }
+
+    private long costForVeo(Database.User user) {
+        String mode = veoModeValue(user.veoMode);
+        return "veo3_fast".equalsIgnoreCase(mode) ? 70_000 : 350_000;
     }
 
     private int countGeminiHistoryPrompts(long userId) {
@@ -2978,6 +3157,23 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
     }
 
+    private void sendPostResponseHint(long chatId) {
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        SendMessage msg = new SendMessage(String.valueOf(chatId),
+                "Для продолжения использования текущей модели с выбранными настройками - пришлите следующий промпт\n\n" +
+                        "Для изменения настроек выберите кнопку ниже👇");
+        msg.setReplyMarkup(postResponseKeyboard());
+        try {
+            executeWithRetry(msg);
+        } catch (Exception ignored) {
+        }
+    }
+
     private String optionLabel(String label, String value, String current) {
         if (value.equalsIgnoreCase(current)) {
             return "✅ " + label;
@@ -3023,6 +3219,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         if (user != null && isSoraModel(normalizeModel(user.currentModel))) {
             return 1;
+        }
+        if (user != null && isVeoModel(normalizeModel(user.currentModel))) {
+            return 2;
         }
         return 10;
     }

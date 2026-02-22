@@ -54,7 +54,9 @@ public class Database {
                     kling_mode TEXT NOT NULL DEFAULT 'std',
                     kling_translate_enabled INTEGER NOT NULL DEFAULT 1,
                     sora_duration INTEGER NOT NULL DEFAULT 10,
-                    sora_aspect_ratio TEXT NOT NULL DEFAULT 'landscape'
+                    sora_aspect_ratio TEXT NOT NULL DEFAULT 'landscape',
+                    veo_mode TEXT NOT NULL DEFAULT 'fast',
+                    veo_aspect_ratio TEXT NOT NULL DEFAULT '16:9'
                 )
             """);
 
@@ -169,6 +171,14 @@ public class Database {
                 st.execute("ALTER TABLE users ADD COLUMN sora_aspect_ratio TEXT NOT NULL DEFAULT 'landscape'");
             } catch (SQLException ignored) {
             }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN veo_mode TEXT NOT NULL DEFAULT 'fast'");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE users ADD COLUMN veo_aspect_ratio TEXT NOT NULL DEFAULT '16:9'");
+            } catch (SQLException ignored) {
+            }
 
             st.execute("""
                 CREATE TABLE IF NOT EXISTS promo_codes (
@@ -261,8 +271,8 @@ public class Database {
 
         String created = now();
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled, kling_duration, kling_aspect_ratio, kling_audio_enabled, kling_mode, kling_translate_enabled, sora_duration, sora_aspect_ratio) " +
-                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1, 'balanced', 'auto', 'square_hd', 1, 1, 1, 3, '16:9', 0, 'std', 1, 10, 'landscape')")) {
+                "INSERT INTO users (tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled, kling_duration, kling_aspect_ratio, kling_audio_enabled, kling_mode, kling_translate_enabled, sora_duration, sora_aspect_ratio, veo_mode, veo_aspect_ratio) " +
+                        "VALUES (?, ?, ?, ?, 10000, 0, ?, ?, ?, 0, NULL, 'auto', '2k', 'auto', 1, 0, 1, 1, 'balanced', 'auto', 'square_hd', 1, 1, 1, 3, '16:9', 0, 'std', 1, 10, 'landscape', 'fast', '16:9')")) {
             ps.setLong(1, tgId);
             ps.setString(2, username);
             ps.setString(3, firstName);
@@ -283,7 +293,7 @@ public class Database {
 
     public synchronized User getUser(long tgId) {
         try (Connection conn = connect(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled, kling_duration, kling_aspect_ratio, kling_audio_enabled, kling_mode, kling_translate_enabled, sora_duration, sora_aspect_ratio FROM users WHERE tg_id = ?")) {
+                "SELECT tg_id, username, first_name, last_name, balance, spent, created_at, updated_at, referrer_id, referral_earned, receipt_email, current_model, output_format, resolution, aspect_ratio, welcome_bonus_given, nano_warned, midjourney_raw_enabled, midjourney_translate_enabled, ideogram_speed, ideogram_style, ideogram_image_size, ideogram_expand_prompt, gemini_history_enabled, gemini_show_cost_enabled, kling_duration, kling_aspect_ratio, kling_audio_enabled, kling_mode, kling_translate_enabled, sora_duration, sora_aspect_ratio, veo_mode, veo_aspect_ratio FROM users WHERE tg_id = ?")) {
             ps.setLong(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -323,6 +333,8 @@ public class Database {
                     u.klingTranslateEnabled = rs.getInt("kling_translate_enabled") == 1;
                     u.soraDuration = rs.getInt("sora_duration");
                     u.soraAspectRatio = rs.getString("sora_aspect_ratio");
+                    u.veoMode = rs.getString("veo_mode");
+                    u.veoAspectRatio = rs.getString("veo_aspect_ratio");
                     return u;
                 }
             }
@@ -424,6 +436,14 @@ public class Database {
 
     public synchronized void setSoraAspectRatio(long tgId, String ratio) {
         updateUserField(tgId, "sora_aspect_ratio", ratio);
+    }
+
+    public synchronized void setVeoMode(long tgId, String mode) {
+        updateUserField(tgId, "veo_mode", mode);
+    }
+
+    public synchronized void setVeoAspectRatio(long tgId, String ratio) {
+        updateUserField(tgId, "veo_aspect_ratio", ratio);
     }
 
     public synchronized boolean ensureWelcomeBonus(long tgId) {
@@ -1070,6 +1090,8 @@ public class Database {
         public boolean klingTranslateEnabled;
         public int soraDuration;
         public String soraAspectRatio;
+        public String veoMode;
+        public String veoAspectRatio;
     }
 
     public static class GeminiMessage {
