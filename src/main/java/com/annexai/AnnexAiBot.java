@@ -65,6 +65,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private static final String MODEL_GEMINI_3_FLASH = "gemini-3-flash";
     private static final String MODEL_GEMINI_3_PRO = "gemini-3-pro";
     private static final String MODEL_KLING_3 = "kling-3.0/video";
+    private static final String MODEL_SORA_2_TEXT = "sora-2-text-to-video";
+    private static final String MODEL_SORA_2_IMAGE = "sora-2-image-to-video";
     private static final int GEMINI_HISTORY_LIMIT = 12;
 
     private final Config config;
@@ -300,6 +302,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
             return;
         }
+        if ("model:sora".equals(data)) {
+            db.setCurrentModel(userId, MODEL_SORA_2_TEXT);
+            user.currentModel = MODEL_SORA_2_TEXT;
+            db.clearPendingImages(userId);
+            modelSelectedThisSession.add(userId);
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
+            return;
+        }
         if ("model:back".equals(data)) {
             sendStart(chatId, user);
             return;
@@ -344,8 +354,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, klingAudioMenuText(user), klingAudioKeyboard(user));
             return;
         }
-        if ("kling:translate_menu".equals(data)) {
-            editMessage(chatId, messageId, klingTranslateMenuText(user), klingTranslateKeyboard(user));
+        if ("sora:duration_menu".equals(data)) {
+            editMessage(chatId, messageId, soraDurationMenuText(user), soraDurationKeyboard(user));
+            return;
+        }
+        if ("sora:format_menu".equals(data)) {
+            editMessage(chatId, messageId, soraFormatMenuText(user), soraFormatKeyboard(user));
             return;
         }
         if (data.startsWith("settings:format:")) {
@@ -442,11 +456,19 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
             return;
         }
-        if (data.startsWith("kling:translate:")) {
-            String flag = data.substring("kling:translate:".length());
-            boolean enabled = "on".equalsIgnoreCase(flag);
-            db.setKlingTranslateEnabled(userId, enabled);
-            user.klingTranslateEnabled = enabled;
+        if (data.startsWith("sora:duration:")) {
+            String raw = data.substring("sora:duration:".length());
+            int seconds = parseSoraDuration(raw);
+            db.setSoraDuration(userId, seconds);
+            user.soraDuration = seconds;
+            editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
+            return;
+        }
+        if (data.startsWith("sora:format:")) {
+            String ratio = data.substring("sora:format:".length());
+            String normalized = "portrait".equalsIgnoreCase(ratio) ? "portrait" : "landscape";
+            db.setSoraAspectRatio(userId, normalized);
+            user.soraAspectRatio = normalized;
             editMessage(chatId, messageId, modelInfoText(user), modelInfoKeyboard(user));
             return;
         }
@@ -773,7 +795,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         boolean isIdeogram = isIdeogramModel(normalizedModel);
         boolean isGemini = isGeminiModel(normalizedModel);
         boolean isKling = isKlingModel(normalizedModel);
-        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram && !isGemini && !isKling) {
+        boolean isSora = isSoraModel(normalizedModel);
+        if (!isNanoModel(normalizedModel) && !isFlux && !isIdeogram && !isGemini && !isKling && !isSora) {
             execute(new SendMessage(String.valueOf(user.tgId), "Сначала выберите модель через меню /start"));
             return;
         }
@@ -855,7 +878,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 startText.append("📐 Формат видео: ").append(klingAspectRatioLabel(user.klingAspectRatio)).append("\n");
                 startText.append("🎚 Режим: ").append(klingModeLabel(user.klingMode)).append("\n");
                 startText.append("🔊 Аудио: ").append(user.klingAudioEnabled ? "С аудио" : "Без аудио").append("\n");
-                startText.append("🌐 Автоперевод: ").append(user.klingTranslateEnabled ? "включен" : "выключен").append("\n");
+            } else if (isSoraModel(normalizedModel)) {
+                startText.append("⏱ Длительность: ").append(soraDurationValue(user.soraDuration)).append(" сек.\n");
+                startText.append("📐 Формат видео: ").append(soraAspectRatioLabel(user.soraAspectRatio)).append("\n");
             } else {
                 String resolutionLabel = resolutionLabel(user.resolution);
                 String formatLabel = formatLabel(user.outputFormat);
@@ -957,6 +982,17 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     }
                     success = result.success;
                     return;
+                } else if (isSoraModel(model)) {
+                    String preparedPrompt = prepareSoraPrompt(prompt);
+                    int seconds = soraDurationValue(user.soraDuration);
+                    String ratio = soraAspectRatioValue(user.soraAspectRatio);
+                    List<String> clipImages = imageUrls.size() > 1 ? imageUrls.subList(0, 1) : imageUrls;
+                    String soraModel = clipImages.isEmpty() ? MODEL_SORA_2_TEXT : MODEL_SORA_2_IMAGE;
+                    System.out.println("Kie request model=" + soraModel + " duration=" + seconds + " ratio=" + ratio + " images=" + clipImages.size());
+                    taskId = kieClient.createSoraTask(soraModel, preparedPrompt, clipImages, ratio, seconds, "s3");
+                    PollResult result = pollTaskAndSend(taskId, user.tgId, model);
+                    success = result.success;
+                    return;
                 } else if (isGeminiModel(model)) {
                     List<Database.GeminiMessage> history = user.geminiHistoryEnabled
                             ? db.listGeminiMessages(user.tgId, GEMINI_HISTORY_LIMIT)
@@ -1022,7 +1058,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         safeSend(chatId, msg);
                         return PollResult.fail("empty_result", false);
                     }
-                    boolean isVideo = isKlingModel(modelUsed) || urls.stream().anyMatch(this::isVideoUrl);
+                    boolean isVideo = isKlingModel(modelUsed) || isSoraModel(modelUsed) || urls.stream().anyMatch(this::isVideoUrl);
                     for (String url : urls) {
                         if (isVideo) {
                             sendVideoFromUrl(chatId, url);
@@ -1317,6 +1353,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 List.of(button("🌀 Flux 2", "model:flux")),
                 List.of(button("🧩 Ideogram V3", "model:ideogram")),
                 List.of(button("🎞 Kling 3.0", "model:kling")),
+                List.of(button("🎬 Sora 2", "model:sora")),
                 List.of(button("⬅️ Назад", "menu:start"))
         ));
     }
@@ -1345,7 +1382,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             rows.add(List.of(button("📐 Формат видео", "kling:format_menu")));
             rows.add(List.of(button("🎚 Режим", "kling:mode_menu")));
             rows.add(List.of(button("🔊 Аудио", "kling:audio_menu")));
-            rows.add(List.of(button("🌐 Автоперевод", "kling:translate_menu")));
+        } else if (isSoraModel(normalized)) {
+            rows.add(List.of(button("⏱ Длительность", "sora:duration_menu")));
+            rows.add(List.of(button("📐 Формат видео", "sora:format_menu")));
         }
         rows.add(List.of(button("🏠 Вернуться в меню", "menu:start")));
         return new InlineKeyboardMarkup(rows);
@@ -1563,7 +1602,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             String ratio = klingAspectRatioLabel(user.klingAspectRatio);
             String modeLabel = klingModeLabel(user.klingMode);
             String audioLabel = user.klingAudioEnabled ? "С аудио" : "Без аудио";
-            String translateLabel = user.klingTranslateEnabled ? "включен" : "выключен";
             return "🎞 Kling · меняй реальность\n\n" +
                     "✏️ Отправьте мне описание того, что хотите видеть на вашем видео, например:\n" +
                     "└ Оживи моё фото и сделай так, чтобы я улыбался и махал рукой в камеру. (прикрепите своё фото или фото близкого).\n" +
@@ -1574,9 +1612,21 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     "Формат видео: " + ratio + "\n" +
                     "Версия: 3.0\n" +
                     "Режим: " + modeLabel + "\n" +
-                    "Аудио: " + audioLabel + "\n" +
-                    "Автоперевод: " + translateLabel + "\n\n" +
+                    "Аудио: " + audioLabel + "\n\n" +
                     "🔹 Баланса хватит на " + queries + " запросов. 1 запрос = " + formatNumber(cost) + " токенов.";
+        }
+        if (isSoraModel(normalized)) {
+            int seconds = soraDurationValue(user.soraDuration);
+            String ratio = soraAspectRatioLabel(user.soraAspectRatio);
+            return "☁️ Sora 2 · вирусные ролики с озвучкой\n\n" +
+                    "✏️ Нейросеть создает видео длиной до 15 секунд, в котором может быть звук, возможна озвучка сцен и персонажей в кадре, смена локаций и т.д.\n\n" +
+                    "📸 При желании можно прикрепить 1 фото с промптом и создать видео на его основе.\n\n" +
+                    "⛔️ Sora не может озвучивать людей на фото и делать так, чтобы они учавствовали в кадре. Отправляйте фото без людей в кадре.\n\n" +
+                    "⚙️ Параметры\n" +
+                    "Длительность: " + seconds + " сек.\n" +
+                    "Качество: стандартное\n" +
+                    "Формат: " + ratio + "\n\n" +
+                    "🔹 Баланса хватит на " + queries + " видео. 1 видео = " + formatNumber(cost) + " токенов.";
         }
         String title = MODEL_NANO_BANANA_PRO.equals(user.currentModel) ? "🍌 Nano Banana Pro · твори и экспериментируй"
                 : "🍌 Nano Banana · твори и экспериментируй";
@@ -1797,17 +1847,33 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         ));
     }
 
-    private String klingTranslateMenuText(Database.User user) {
-        return "🌐 Автоперевод\n" +
-                "Текущее: " + (user.klingTranslateEnabled ? "включен" : "выключен") + "\n\n" +
-                "Выберите вариант.";
+    private String soraDurationMenuText(Database.User user) {
+        int seconds = soraDurationValue(user.soraDuration);
+        return "⏱ Длительность\n" +
+                "Текущая: " + seconds + " сек.\n\n" +
+                "Выберите длительность видео (10 или 15 сек).";
     }
 
-    private InlineKeyboardMarkup klingTranslateKeyboard(Database.User user) {
-        String current = user.klingTranslateEnabled ? "on" : "off";
+    private InlineKeyboardMarkup soraDurationKeyboard(Database.User user) {
+        int current = soraDurationValue(user.soraDuration);
         return new InlineKeyboardMarkup(List.of(
-                List.of(button(optionLabel("Включен", "on", current), "kling:translate:on")),
-                List.of(button(optionLabel("Выключен", "off", current), "kling:translate:off")),
+                List.of(button(optionLabel("10 сек", "10", String.valueOf(current)), "sora:duration:10"),
+                        button(optionLabel("15 сек", "15", String.valueOf(current)), "sora:duration:15")),
+                List.of(button("⬅️ Назад", "settings:back"))
+        ));
+    }
+
+    private String soraFormatMenuText(Database.User user) {
+        return "📐 Формат видео\n" +
+                "Текущий: " + soraAspectRatioLabel(user.soraAspectRatio) + "\n\n" +
+                "Выберите формат кадра.";
+    }
+
+    private InlineKeyboardMarkup soraFormatKeyboard(Database.User user) {
+        String ratio = soraAspectRatioValue(user.soraAspectRatio);
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button(optionLabel("📐 16:9", "landscape", ratio), "sora:format:landscape"),
+                        button(optionLabel("📐 9:16", "portrait", ratio), "sora:format:portrait")),
                 List.of(button("⬅️ Назад", "settings:back"))
         ));
     }
@@ -2315,6 +2381,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (isKlingModel(normalized)) {
             return costForKling(user);
         }
+        if (isSoraModel(normalized)) {
+            return costForSora(user);
+        }
         String res = user.resolution == null ? "2k" : user.resolution.toLowerCase(Locale.ROOT);
         return costForUserResolution(user, res);
     }
@@ -2407,6 +2476,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if (MODEL_KLING_3.equalsIgnoreCase(model)) {
             return "Kling 3.0";
         }
+        if (MODEL_SORA_2_TEXT.equalsIgnoreCase(model) || MODEL_SORA_2_IMAGE.equalsIgnoreCase(model)) {
+            return "Sora 2";
+        }
         return model;
     }
 
@@ -2474,6 +2546,12 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         if ("kling-3.0".equalsIgnoreCase(model) || "kling-3".equalsIgnoreCase(model) || "kling".equalsIgnoreCase(model)) {
             return MODEL_KLING_3;
         }
+        if (MODEL_SORA_2_TEXT.equalsIgnoreCase(model) || MODEL_SORA_2_IMAGE.equalsIgnoreCase(model)) {
+            return MODEL_SORA_2_TEXT;
+        }
+        if ("sora-2".equalsIgnoreCase(model) || "sora2".equalsIgnoreCase(model) || "sora".equalsIgnoreCase(model)) {
+            return MODEL_SORA_2_TEXT;
+        }
         return model;
     }
 
@@ -2528,6 +2606,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 || "kling".equalsIgnoreCase(model);
     }
 
+    private boolean isSoraModel(String model) {
+        return MODEL_SORA_2_TEXT.equalsIgnoreCase(model)
+                || MODEL_SORA_2_IMAGE.equalsIgnoreCase(model)
+                || "sora-2".equalsIgnoreCase(model)
+                || "sora2".equalsIgnoreCase(model)
+                || "sora".equalsIgnoreCase(model);
+    }
+
     private boolean isFluxFlexModel(String model) {
         return MODEL_FLUX_2_FLEX_TEXT.equalsIgnoreCase(model)
                 || MODEL_FLUX_2_FLEX_IMAGE.equalsIgnoreCase(model);
@@ -2542,25 +2628,11 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String prepareKlingPrompt(Database.User user, String prompt) {
-        String base = prompt == null ? "" : prompt.trim();
-        if (user == null || !user.klingTranslateEnabled) {
-            return base;
-        }
-        if (!containsCyrillic(base)) {
-            return base;
-        }
-        try {
-            List<KieClient.ChatMessage> messages = List.of(
-                    new KieClient.ChatMessage("system", "Translate the user's text to English. Return only the translated text."),
-                    new KieClient.ChatMessage("user", base)
-            );
-            String translated = kieClient.createGeminiCompletion(MODEL_GEMINI_3_FLASH, messages);
-            if (translated != null && !translated.isBlank()) {
-                return translated.trim();
-            }
-        } catch (Exception ignored) {
-        }
-        return base;
+        return prompt == null ? "" : prompt.trim();
+    }
+
+    private String prepareSoraPrompt(String prompt) {
+        return prompt == null ? "" : prompt.trim();
     }
 
     private int klingDurationValue(int raw) {
@@ -2593,6 +2665,35 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return normalized;
         }
         return "16:9";
+    }
+
+    private int soraDurationValue(int raw) {
+        if (raw <= 10) {
+            return 10;
+        }
+        return 15;
+    }
+
+    private int parseSoraDuration(String raw) {
+        if (raw == null) {
+            return 10;
+        }
+        try {
+            return soraDurationValue(Integer.parseInt(raw.trim()));
+        } catch (NumberFormatException e) {
+            return 10;
+        }
+    }
+
+    private String soraAspectRatioValue(String ratio) {
+        if ("portrait".equalsIgnoreCase(ratio)) {
+            return "portrait";
+        }
+        return "landscape";
+    }
+
+    private String soraAspectRatioLabel(String ratio) {
+        return "portrait".equalsIgnoreCase(ratio) ? "9:16" : "16:9";
     }
 
     private String klingModeValue(String mode) {
@@ -2710,6 +2811,14 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             perSecond = audio ? 50_000 : 30_000;
         }
         return perSecond * seconds;
+    }
+
+    private long costForSora(Database.User user) {
+        int seconds = soraDurationValue(user.soraDuration);
+        if (seconds <= 10) {
+            return 60_000;
+        }
+        return 75_000;
     }
 
     private int countGeminiHistoryPrompts(long userId) {
@@ -2911,6 +3020,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         }
         if (user != null && isKlingModel(normalizeModel(user.currentModel))) {
             return 2;
+        }
+        if (user != null && isSoraModel(normalizeModel(user.currentModel))) {
+            return 1;
         }
         return 10;
     }

@@ -311,6 +311,62 @@ public class KieClient {
         }
     }
 
+    public String createSoraTask(String model,
+                                 String prompt,
+                                 List<String> imageUrls,
+                                 String aspectRatio,
+                                 int durationSeconds,
+                                 String uploadMethod) throws IOException {
+        List<String> fields = new java.util.ArrayList<>();
+        fields.add("\"prompt\":\"" + escape(prompt) + "\"");
+        if (aspectRatio != null && !aspectRatio.isBlank()) {
+            fields.add("\"aspect_ratio\":\"" + escape(aspectRatio) + "\"");
+        }
+        fields.add("\"n_frames\":\"" + durationSeconds + "\"");
+        fields.add("\"remove_watermark\":true");
+        if (uploadMethod != null && !uploadMethod.isBlank()) {
+            fields.add("\"upload_method\":\"" + escape(uploadMethod) + "\"");
+        }
+        if (imageUrls != null && !imageUrls.isEmpty()) {
+            StringBuilder images = new StringBuilder("[");
+            for (int i = 0; i < imageUrls.size(); i++) {
+                if (i > 0) {
+                    images.append(",");
+                }
+                images.append("\"").append(escape(imageUrls.get(i))).append("\"");
+            }
+            images.append("]");
+            fields.add("\"image_urls\":" + images);
+        }
+
+        String input = String.join(",", fields);
+        String payload = "{" +
+                "\"model\":\"" + escape(model) + "\"," +
+                "\"input\":{" + input + "}" +
+                "}";
+
+        RequestBody body = RequestBody.create(payload, MediaType.parse("application/json"));
+        Request request = new Request.Builder()
+                .url(config.kieApiBase + "/api/v1/jobs/createTask")
+                .addHeader("Authorization", "Bearer " + config.kieApiKey)
+                .post(body)
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String err = response.body() != null ? response.body().string() : "";
+                throw new IOException("Kie createTask failed: " + response.code() + " " + err);
+            }
+            String respBody = response.body() != null ? response.body().string() : "{}";
+            JsonNode json = mapper.readTree(respBody);
+            String taskId = json.path("data").path("taskId").asText();
+            if (taskId == null || taskId.isBlank()) {
+                throw new IOException("Kie createTask returned empty taskId: " + respBody);
+            }
+            return taskId;
+        }
+    }
+
     public String createGeminiTask(String model, String prompt, List<String> imageUrls, List<String> fileUrls) throws IOException {
         StringBuilder content = new StringBuilder(prompt == null ? "" : prompt.trim());
         if (imageUrls != null && !imageUrls.isEmpty()) {
