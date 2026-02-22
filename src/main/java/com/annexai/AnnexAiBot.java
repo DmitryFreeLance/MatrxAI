@@ -1127,6 +1127,37 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 }
                 if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state) || "completed".equalsIgnoreCase(info.state)) {
                     List<String> urls = extractResultUrls(info.resultJson);
+                    if (isKlingModel(modelUsed)) {
+                        List<String> noGif = new ArrayList<>();
+                        for (String url : urls) {
+                            if (url == null) {
+                                continue;
+                            }
+                            if (!url.toLowerCase(Locale.ROOT).contains(".gif")) {
+                                noGif.add(url);
+                            }
+                        }
+                        if (!noGif.isEmpty()) {
+                            urls = noGif;
+                        } else {
+                        List<String> swapped = new ArrayList<>();
+                        for (String url : urls) {
+                            if (url == null) {
+                                continue;
+                            }
+                            String lower = url.toLowerCase(Locale.ROOT);
+                            int gifIdx = lower.indexOf(".gif");
+                            if (gifIdx >= 0) {
+                                String before = url.substring(0, gifIdx);
+                                String after = url.substring(gifIdx + 4);
+                                swapped.add(before + ".mp4" + after);
+                            } else {
+                                swapped.add(url);
+                            }
+                        }
+                        urls = swapped;
+                    }
+                    }
                     if (urls.isEmpty()) {
                         String msg = isKlingModel(modelUsed)
                                 ? "Готово, но без видео. Попробуйте другой запрос.\nТокены возвращены."
@@ -1405,9 +1436,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     private void sendStart(long chatId, Database.User user) throws TelegramApiException {
         String text = "Добро пожаловать в мульти-лабораторию контента. Выбирай модель под задачу — так результат будет быстрее и точнее\n\n" +
                 "🧠 Текст\n" +
-                "• <b>ChatGPT</b> — универсальный помощник: идеи, сценарии, продающие тексты, диалоги\n" +
-                "• <b>Gemini 3</b> — аналитика, сравнения, факты, структурирование сложных тем\n" +
-                "• <b>Grok</b> — дерзкий тон, трендовые форматы, короткие и цепкие формулировки\n\n" +
+                "• <b>Gemini 3</b> — аналитика, сравнения, факты, структурирование сложных тем\n\n" +
                 "📸 Фото\n" +
                 "• <b>Flux 2</b> — универсальная генерация с гибкими настройками\n" +
                 "• <b>Ideogram V3</b> — сильная типографика, постеры и точная работа с текстом\n" +
@@ -1427,10 +1456,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup startKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("Текст", "menu:text")),
-                List.of(button("Фото", "menu:photo"), button("Видео", "menu:video")),
-                List.of(button("Пригласить друга", "menu:invite"), button("Мой профиль", "menu:profile")),
-                List.of(button("Купить токены", "menu:buy"))
+                List.of(button("🧠 Текст", "menu:text")),
+                List.of(button("📸 Фото", "menu:photo"), button("🎬 Видео", "menu:video")),
+                List.of(button("🔗 Пригласить друга", "menu:invite"), button("👤 Мой профиль", "menu:profile")),
+                List.of(button("💳 Купить токены", "menu:buy"))
         ));
     }
 
@@ -1515,7 +1544,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 List.of(button(costLabel, "gemini:cost_toggle")),
                 List.of(button("🔁 Изменить модель", "gemini:change_model")),
                 List.of(button("🧹 Очистить историю", "gemini:clear_history")),
-                List.of(button("⬅️ Назад к моделям", "menu:models"))
+                List.of(button("🏠 Вернуться в меню", "menu:start"))
         ));
     }
 
@@ -1652,8 +1681,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup postResponseKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("Изменить настройки", "menu:current_model")),
-                List.of(button("Вернуться в меню", "menu:start"))
+                List.of(button("⚙️ Изменить настройки", "menu:current_model")),
+                List.of(button("🏠 Вернуться в меню", "menu:start"))
         ));
     }
 
@@ -2121,9 +2150,9 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private String buyText() {
-        return "🤩 Наш бот предоставляет вам лучший сервис без каких либо ограничений и продолжает это делать ежедневно 24/7.\n" +
-                "Выберите пакет токенов ниже — оплата проходит прямо в Telegram, а пополнение происходит мгновенно.\n" +
-                "<b>Токены расходуются только за реальные генерации, всё прозрачно и без скрытых условий.</b>\n";
+        return "🤩 Наш бот предоставляет вам лучший сервис без каких либо ограничений и продолжает это делать ежедневно 24/7.\n\n" +
+                "Выберите пакет токенов ниже — оплата проходит прямо в Telegram, а пополнение происходит мгновенно.\n\n" +
+                "Токены расходуются только за реальные генерации, всё прозрачно и без скрытых условий.";
     }
 
     private String profileText(Database.User user) {
