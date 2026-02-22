@@ -390,7 +390,6 @@ public class KieClient {
             fields.add("\"aspect_ratio\":\"" + escape(aspectRatio) + "\"");
         }
         fields.add("\"model\":\"" + escape(model) + "\"");
-        fields.add("\"enableTranslation\":false");
 
         String payload = "{" + String.join(",", fields) + "}";
 
@@ -546,6 +545,62 @@ public class KieClient {
         }
     }
 
+    public VeoTaskInfo getVeoTaskInfo(String taskId) throws IOException {
+        HttpUrl url = HttpUrl.parse(config.kieApiBase + "/api/v1/veo/record-info")
+                .newBuilder()
+                .addQueryParameter("taskId", taskId)
+                .build();
+
+        Request request = new Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer " + config.kieApiKey)
+                .get()
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String err = response.body() != null ? response.body().string() : "";
+                throw new IOException("Kie veo record-info failed: " + response.code() + " " + err);
+            }
+            String respBody = response.body() != null ? response.body().string() : "{}";
+            JsonNode json = mapper.readTree(respBody);
+            JsonNode data = json.path("data");
+            int successFlag = data.path("successFlag").asInt(-1);
+            String errorMessage = data.path("errorMessage").asText();
+            if (errorMessage == null || errorMessage.isBlank()) {
+                errorMessage = json.path("msg").asText();
+            }
+            List<String> urls = new java.util.ArrayList<>();
+            JsonNode responseNode = data.path("response");
+            JsonNode resultUrls = responseNode.isMissingNode() ? data.path("resultUrls") : responseNode.path("resultUrls");
+            if (resultUrls.isTextual()) {
+                String raw = resultUrls.asText();
+                try {
+                    JsonNode parsed = mapper.readTree(raw);
+                    if (parsed.isArray()) {
+                        for (JsonNode n : parsed) {
+                            urls.add(n.asText());
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            } else if (resultUrls.isArray()) {
+                for (JsonNode n : resultUrls) {
+                    urls.add(n.asText());
+                }
+            }
+            if (urls.isEmpty()) {
+                JsonNode originUrls = responseNode.path("originUrls");
+                if (originUrls.isArray()) {
+                    for (JsonNode n : originUrls) {
+                        urls.add(n.asText());
+                    }
+                }
+            }
+            return new VeoTaskInfo(successFlag, errorMessage, urls);
+        }
+    }
+
     private String escape(String value) {
         if (value == null) {
             return "";
@@ -558,5 +613,17 @@ public class KieClient {
         public String state;
         public String resultJson;
         public String failReason;
+    }
+
+    public static class VeoTaskInfo {
+        public final int successFlag;
+        public final String errorMessage;
+        public final List<String> resultUrls;
+
+        public VeoTaskInfo(int successFlag, String errorMessage, List<String> resultUrls) {
+            this.successFlag = successFlag;
+            this.errorMessage = errorMessage;
+            this.resultUrls = resultUrls == null ? List.of() : resultUrls;
+        }
     }
 }

@@ -611,7 +611,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             return;
         }
         if ("menu:buy".equals(data)) {
-            editMessage(chatId, messageId, buyText(), buyKeyboard());
+            editMessageHtml(chatId, messageId, buyText(), buyKeyboard());
             return;
         }
         if ("buy:back".equals(data)) {
@@ -1065,7 +1065,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                     String veoModel = veoModeValue(user.veoMode);
                     System.out.println("Kie request model=" + veoModel + " ratio=" + ratio + " images=" + clipImages.size());
                     taskId = kieClient.createVeoTask(veoModel, preparedPrompt, clipImages, ratio);
-                    PollResult result = pollTaskAndSend(taskId, user.tgId, model);
+                    PollResult result = pollVeoTaskAndSend(taskId, user.tgId);
                     success = result.success;
                     return;
                 } else if (isGeminiModel(model)) {
@@ -1084,7 +1084,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                         outputText = outputText + "\n\n💰 Стоимость: " + formatNumber(cost) + " токенов";
                     }
                     sendLongMessage(user.tgId, outputText);
-                    sendPostResponseHint(user.tgId);
                     if (user.geminiHistoryEnabled) {
                         db.addGeminiMessage(user.tgId, "user", prompt);
                         db.addGeminiMessage(user.tgId, "assistant", responseText);
@@ -1127,37 +1126,6 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 }
                 if ("success".equalsIgnoreCase(info.state) || "succeeded".equalsIgnoreCase(info.state) || "completed".equalsIgnoreCase(info.state)) {
                     List<String> urls = extractResultUrls(info.resultJson);
-                    if (isKlingModel(modelUsed)) {
-                        List<String> noGif = new ArrayList<>();
-                        for (String url : urls) {
-                            if (url == null) {
-                                continue;
-                            }
-                            if (!url.toLowerCase(Locale.ROOT).contains(".gif")) {
-                                noGif.add(url);
-                            }
-                        }
-                        if (!noGif.isEmpty()) {
-                            urls = noGif;
-                        } else {
-                        List<String> swapped = new ArrayList<>();
-                        for (String url : urls) {
-                            if (url == null) {
-                                continue;
-                            }
-                            String lower = url.toLowerCase(Locale.ROOT);
-                            int gifIdx = lower.indexOf(".gif");
-                            if (gifIdx >= 0) {
-                                String before = url.substring(0, gifIdx);
-                                String after = url.substring(gifIdx + 4);
-                                swapped.add(before + ".mp4" + after);
-                            } else {
-                                swapped.add(url);
-                            }
-                        }
-                        urls = swapped;
-                    }
-                    }
                     if (urls.isEmpty()) {
                         String msg = isKlingModel(modelUsed)
                                 ? "Готово, но без видео. Попробуйте другой запрос.\nТокены возвращены."
@@ -1198,6 +1166,39 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
         }
         return PollResult.fail("wait_timeout", timeout);
+    }
+
+    private PollResult pollVeoTaskAndSend(String taskId, long chatId) {
+        int attempts = 200;
+        for (int i = 0; i < attempts; i++) {
+            try {
+                TimeUnit.SECONDS.sleep(3);
+                KieClient.VeoTaskInfo info = kieClient.getVeoTaskInfo(taskId);
+                if (i % 10 == 0) {
+                    System.out.println("Kie veo task " + taskId + " successFlag=" + info.successFlag);
+                }
+                if (info.successFlag == 1) {
+                    if (info.resultUrls == null || info.resultUrls.isEmpty()) {
+                        safeSend(chatId, "Готово, но без видео. Попробуйте другой запрос.\nТокены возвращены.");
+                        return PollResult.fail("empty_result", false);
+                    }
+                    for (String url : info.resultUrls) {
+                        sendVideoFromUrl(chatId, url);
+                    }
+                    sendPostResponseHint(chatId);
+                    return PollResult.success();
+                }
+                if (info.successFlag == 2 || info.successFlag == 3) {
+                    safeSend(chatId, "Генерация не удалась: " + mapKieErrorMessage(info.errorMessage) + "\nТокены возвращены.");
+                    return PollResult.fail(info.errorMessage, false);
+                }
+            } catch (Exception e) {
+                safeSend(chatId, "Ошибка при проверке задачи: " + mapKieErrorMessage(e.getMessage()) + "\nТокены возвращены.");
+                return PollResult.fail(e.getMessage(), false);
+            }
+        }
+        safeSend(chatId, "Время ожидания истекло. Попробуйте ещё раз.\nТокены возвращены.");
+        return PollResult.fail("wait_timeout", false);
     }
 
     private static class PollResult {
@@ -1434,7 +1435,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
     }
 
     private void sendStart(long chatId, Database.User user) throws TelegramApiException {
-        String text = "Добро пожаловать в мульти-лабораторию контента. Выбирай модель под задачу — так результат будет быстрее и точнее\n\n" +
+        String text = "👋 <b>Добро пожаловать в мульти-лабораторию контента.\n</b>" +
+                "Выбирай модель для своих задач 👇\n\n" +
                 "🧠 Текст\n" +
                 "• <b>Gemini 3</b> — аналитика, сравнения, факты, структурирование сложных тем\n\n" +
                 "📸 Фото\n" +
@@ -1714,6 +1716,16 @@ public class AnnexAiBot extends TelegramLongPollingBot {
         edit.setChatId(String.valueOf(chatId));
         edit.setMessageId(messageId);
         edit.setText(text);
+        edit.setReplyMarkup(markup);
+        executeWithRetry(edit);
+    }
+
+    private void editMessageHtml(long chatId, int messageId, String text, InlineKeyboardMarkup markup) throws TelegramApiException {
+        EditMessageText edit = new EditMessageText();
+        edit.setChatId(String.valueOf(chatId));
+        edit.setMessageId(messageId);
+        edit.setText(text);
+        edit.setParseMode("HTML");
         edit.setReplyMarkup(markup);
         executeWithRetry(edit);
     }
@@ -2151,8 +2163,8 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private String buyText() {
         return "🤩 Наш бот предоставляет вам лучший сервис без каких либо ограничений и продолжает это делать ежедневно 24/7.\n\n" +
-                "Выберите пакет токенов ниже — оплата проходит прямо в Telegram, а пополнение происходит мгновенно.\n\n" +
-                "Токены расходуются только за реальные генерации, всё прозрачно и без скрытых условий.";
+                "<b>Выберите пакет токенов ниже</b> — оплата проходит прямо в Telegram, а пополнение происходит мгновенно.\n\n" +
+                "<b>Токены расходуются только за реальные генерации</b>, всё прозрачно и без скрытых условий.";
     }
 
     private String profileText(Database.User user) {
