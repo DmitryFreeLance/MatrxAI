@@ -259,6 +259,18 @@ public class AnnexAiBot extends TelegramLongPollingBot {
             editMessage(chatId, messageId, "Выберите модель:", modelSelectKeyboard());
             return;
         }
+        if ("menu:text".equals(data)) {
+            editMessage(chatId, messageId, "Выберите модель:", modelSelectTextKeyboard());
+            return;
+        }
+        if ("menu:photo".equals(data)) {
+            editMessage(chatId, messageId, "Выберите модель:", modelSelectPhotoKeyboard());
+            return;
+        }
+        if ("menu:video".equals(data)) {
+            editMessage(chatId, messageId, "Выберите модель:", modelSelectVideoKeyboard());
+            return;
+        }
         if ("menu:current_model".equals(data)) {
             modelSelectedThisSession.add(userId);
             if (isGeminiModel(normalizeModel(user.currentModel))) {
@@ -1404,6 +1416,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 "• <b>Veo 3.1</b> — кинематографичные ролики и красивые планы\n" +
                 "• <b>Sora 2</b> — сюжетные клипы, движение камеры, сложные сцены\n" +
                 "• <b>Kling 3.0</b> — динамика, эффектные переходы, короткие рекламные видео\n\n" +
+                "ИДЕИ, РОЗЫГРЫШИ - @MatrxAIBot\n\n" +
                 "Твой баланс: <b>" + formatNumber(user.balance) + "</b> токенов";
 
         SendMessage msg = new SendMessage(String.valueOf(chatId), text);
@@ -1414,10 +1427,10 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private InlineKeyboardMarkup startKeyboard() {
         return new InlineKeyboardMarkup(List.of(
-                List.of(button("🧠 Выбор модели", "menu:models")),
-                List.of(button("💳 Купить токены", "menu:buy")),
-                List.of(button("🔗 Пригласить друга", "menu:invite")),
-                List.of(button("👤 Мой профиль", "menu:profile"))
+                List.of(button("Текст", "menu:text")),
+                List.of(button("Фото", "menu:photo"), button("Видео", "menu:video")),
+                List.of(button("Пригласить друга", "menu:invite"), button("Мой профиль", "menu:profile")),
+                List.of(button("Купить токены", "menu:buy"))
         ));
     }
 
@@ -1427,6 +1440,31 @@ public class AnnexAiBot extends TelegramLongPollingBot {
                 List.of(button("🍌 Nano Banana", "model:nano")),
                 List.of(button("🌀 Flux 2", "model:flux")),
                 List.of(button("🧩 Ideogram V3", "model:ideogram")),
+                List.of(button("🎞 Kling 3.0", "model:kling")),
+                List.of(button("🌊 Veo 3.1", "model:veo")),
+                List.of(button("🎬 Sora 2", "model:sora")),
+                List.of(button("⬅️ Назад", "menu:start"))
+        ));
+    }
+
+    private InlineKeyboardMarkup modelSelectTextKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button("💬 Gemini 3", "model:gemini")),
+                List.of(button("⬅️ Назад", "menu:start"))
+        ));
+    }
+
+    private InlineKeyboardMarkup modelSelectPhotoKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(button("🍌 Nano Banana", "model:nano")),
+                List.of(button("🌀 Flux 2", "model:flux")),
+                List.of(button("🧩 Ideogram V3", "model:ideogram")),
+                List.of(button("⬅️ Назад", "menu:start"))
+        ));
+    }
+
+    private InlineKeyboardMarkup modelSelectVideoKeyboard() {
+        return new InlineKeyboardMarkup(List.of(
                 List.of(button("🎞 Kling 3.0", "model:kling")),
                 List.of(button("🌊 Veo 3.1", "model:veo")),
                 List.of(button("🎬 Sora 2", "model:sora")),
@@ -2997,7 +3035,7 @@ public class AnnexAiBot extends TelegramLongPollingBot {
 
     private long costForVeo(Database.User user) {
         String mode = veoModeValue(user.veoMode);
-        return "veo3_fast".equalsIgnoreCase(mode) ? 70_000 : 350_000;
+        return "veo3_fast".equalsIgnoreCase(mode) ? 60_000 : 250_000;
     }
 
     private int countGeminiHistoryPrompts(long userId) {
